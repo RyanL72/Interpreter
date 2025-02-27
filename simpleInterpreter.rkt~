@@ -4,9 +4,9 @@
 (require "lex.rkt")
 
 
-;---------------------------------------------------------------
-; State Management
-;---------------------------------------------------------------
+;;---------------------------------------------------------------
+;; State Management
+;;---------------------------------------------------------------
 (define make-empty-state
   (lambda () '()))
 
@@ -45,9 +45,9 @@
                    pair))
              state))))
 
-;---------------------------------------------------------------
-; Processing: Expression Evaluation
-;---------------------------------------------------------------
+;;---------------------------------------------------------------
+;; Processing: Expression Evaluation
+;;---------------------------------------------------------------
 (define eval-expr
   (lambda (expr state)
     (cond
@@ -83,9 +83,9 @@
         (eval-expr (caddr expr) state)))
       (else (error 'eval-expr "Unknown expression: ~a" expr)))))
 
-;---------------------------------------------------------------
-; Processing: Statement Evaluation
-;---------------------------------------------------------------
+;;---------------------------------------------------------------
+;; Processing: Statement Evaluation
+;;---------------------------------------------------------------
 (define eval-stmt
   (lambda (stmt state)
     (cond
@@ -113,7 +113,7 @@
        (while-loop state stmt))
       (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
 
-; Define a helper function for while loops.
+;; Define a helper function for while loops.
 (define while-loop
   (lambda (state stmt)
     (if (eval-expr (cadr stmt) state)
@@ -130,9 +130,9 @@
                (eval-statements (cdr stmts) new-state)))
          (eval-stmt (car stmts) state)))))
 
-;---------------------------------------------------------------
-; Main Functionality
-;---------------------------------------------------------------
+;;---------------------------------------------------------------
+;; Main Functionality
+;;---------------------------------------------------------------
 (define normalize-return
   (lambda (val)
     (cond
