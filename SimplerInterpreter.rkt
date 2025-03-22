@@ -1,7 +1,6 @@
 #lang racket
-; Get rid of assoc
-; Get rid of some of the lets
-; Find where certain functions call other functions and replace with new names 
+
+; Myah Potter & Ryan Lin
 
 ;===============================================================
 ; Simple Interpreter
@@ -25,327 +24,199 @@
 (require "lex.rkt")
 
 
-; MANAGING STATES
+; implement layers
+; implement throw
+; implement break
+; implement continue
+; implement return
+; make sure tail recursion is used for m state functions (only m state)
+; implement boxes
 
-; Create an empty state (an association list)
 
-(define (make-empty-state)
-  '())
+;---------------------------------------------------------------
+; Abstractions
+;---------------------------------------------------------------
 
-; Lookup a variable in the state. Error if not found or unassigned.
 
-(define state_lookup
+
+;---------------------------------------------------------------
+; State Management
+;---------------------------------------------------------------
+(define make-empty-state
+  (lambda () '()))
+
+(define lookup
   (lambda (state var)
-  (let ([binding (assoc var state)])
-    (if (not binding)
-        (error 'lookup "Variable ~a not declared" var)
-        (let ([value (cdr binding)])
-          (if (equal? value '*unassigned*)
-              (error 'lookup "Variable ~a used before assignment" var)
-              value))))))
+    ((lambda (binding)
+       (if (not binding)
+           (error 'lookup "Variable ~a not declared" var)
+           ((lambda (value)
+              (if (equal? value '*unassigned*)
+                  (error 'lookup "Variable ~a used before assignment" var)
+                  value))
+            (cdr binding))))
+     (my-assoc var state))))
 
-  
-(define (lookup state var)
-  (let ([binding (assoc var state)])
-    (if (not binding)
-        (error 'lookup "Variable ~a not declared" var)
-        (let ([value (cdr binding)])
-          (if (equal? value '*unassigned*)
-              (error 'lookup "Variable ~a used before assignment" var)
-              value)))))
-
-; Bind a new variable with an initial value (or mark as unassigned).
-(define var_bind
+(define bind
   (lambda (state var val)
-    (if (assoc var state)
-      (error 'bind "Variable ~a already declared" var)
-      (cons (cons var val) state))))
-    
-(define (bind state var val)
-  (if (assoc var state)
-      (error 'bind "Variable ~a already declared" var)
-      (cons (cons var val) state)))
+    (cond
+      ((eq? (my-assoc var state) #t) (error 'bind "Variable ~a already declared" var))
+      ((list? (car state)) (append (cons var val) (car state)))
+      (else (cons (cons var val) state)))))
 
-; Update an existing variable’s value in the state.
-(define var_update
+(define my-assoc
+  (lambda (key alist)
+    (cond
+      ((null? alist) #f)
+      ((list? alist) (my-assoc (car alist)) (my-assoc (cdr alist)))
+      ((equal? (car (car alist)) key) (car alist))
+      (else (my-assoc key (cdr alist))))))
+
+(define update
   (lambda (state var val)
-    (if (not (assoc var state))
-      (error 'update "Variable ~a not declared" var)
-      (map (lambda (pair) (if (equal? (car pair) var) (cons var val) pair)) state))))
-    
-(define (update state var val)
-  (if (not (assoc var state))
-      (error 'update "Variable ~a not declared" var)
-      (map (lambda (pair) (if (equal? (car pair) var) (cons var val) pair)) state)))
+    (if (not (my-assoc var state))
+        (error 'update "Variable ~a not declared" var)
+        (map (lambda (pair)
+               (if (equal? (car pair) var)
+                   (cons var val)
+                   pair))
+             state))))
+
+(define add-layer
+  (lambda (state)
+    (cons '() state)))
+      
+(define remove-layer
+  (lambda (state)
+    (cond
+      ((null? state) state)
+      ((list? (car state)) (cdr state)))))
 
 
-; PROCESSING STATEMENTS
-
-; Evaluate arithmetic expressions
-(define expr_eval
+;---------------------------------------------------------------
+; Processing: Expression Evaluation
+;---------------------------------------------------------------
+(define eval-expr
   (lambda (expr state)
     (cond
-    ; Numbers evaluate to themselves
-    ((number? expr) expr)
+      ((number? expr) expr)
+      ((equal? expr 'true) #t)
+      ((equal? expr 'false) #f)
+      ((symbol? expr) (lookup state expr))
+      ((and (list? expr) (= (length expr) 2) (equal? (car expr) '-))
+       (- (eval-expr (cadr expr) state)))
+      ((and (list? expr) (= (length expr) 2) (equal? (car expr) '!))
+       (not (eval-expr (cadr expr) state)))
+      ((and (list? expr) (= (length expr) 3))
+       ((lambda (op left right)
+          (case op
+            ((+) (+ left right))
+            ((-) (- left right))
+            ((*) (* left right))
+            ((/) (if (zero? right)
+                     (error 'eval-expr "Division by zero")
+                     (quotient left right)))
+            ((%) (modulo left right))
+            ((<) (< left right))
+            ((>) (> left right))
+            ((<=) (<= left right))
+            ((>=) (>= left right))
+            ((==) (= left right))
+            ((!=) (not (= left right)))
+            ((&&) (and left right))
+            ((||) (or left right))
+            (else (error 'eval-expr "Unknown operator: ~a" op))))
+        (car expr)
+        (eval-expr (cadr expr) state)
+        (eval-expr (caddr expr) state)))
+      (else (error 'eval-expr "Unknown expression: ~a" expr)))))
 
-    ; Recognize true and false as constants
-    ((equal? expr 'true) #t)
-    ((equal? expr 'false) #f)
-
-    ; Variables: Lookup their value
-    ((symbol? expr) (state_lookup state expr))
-
-    ; Unary negation (-expr)
-    ((and (list? expr) (= (length expr) 2) (equal? (car expr) '-))
-     (- (eval-expr (cadr expr) state)))
-
-    ; Logical NOT (!expr)
-    ((and (list? expr) (= (length expr) 2) (equal? (car expr) '!))
-     (not (eval-expr (cadr expr) state)))
-
-    ; Binary arithmetic, comparison, and boolean operations
-    ((and (list? expr) (= (length expr) 3))
-     (let* ((op (car expr))
-            (left (eval-expr (cadr expr) state))
-            (right (eval-expr (caddr expr) state)))
-       (case op
-         ; Arithmetic operators
-         ((+) (+ left right))
-         ((-) (- left right))
-         ((*) (* left right))
-         ((/) (if (zero? right) (error 'eval-expr "Division by zero") (quotient left right)))
-         ((%) (modulo left right))
-
-        ; Comparison operators
-         ((<) (< left right))
-         ((>) (> left right))
-         ((<=) (<= left right))
-         ((>=) (>= left right))
-         ((==) (= left right))
-         ((!=) (not (= left right)))
-
-         ; Boolean logic
-         ((&&) (and left right))
-         ((||) (or left right))
-
-         (else (error 'eval-expr "Unknown operator: ~a" op)))))
-
-    ; Invalid expressions
-    (else (error 'eval-expr "Unknown expression: ~a" expr)))))
-
-    
- (define (eval-expr expr state)
-  (cond
-    ; Numbers evaluate to themselves
-    ((number? expr) expr)
-
-    ; Recognize true and false as constants
-    ((equal? expr 'true) #t)
-    ((equal? expr 'false) #f)
-
-    ; Variables: Lookup their value
-    ((symbol? expr) (lookup state expr))
-
-    ; Unary negation (-expr)
-    ((and (list? expr) (= (length expr) 2) (equal? (car expr) '-))
-     (- (eval-expr (cadr expr) state)))
-
-    ; Logical NOT (!expr)
-    ((and (list? expr) (= (length expr) 2) (equal? (car expr) '!))
-     (not (eval-expr (cadr expr) state)))
-
-    ; Binary arithmetic, comparison, and boolean operations
-    ((and (list? expr) (= (length expr) 3))
-     (let* ((op (car expr))
-            (left (eval-expr (cadr expr) state))
-            (right (eval-expr (caddr expr) state)))
-       (case op
-         ; Arithmetic operators
-         ((+) (+ left right))
-         ((-) (- left right))
-         ((*) (* left right))
-         ((/) (if (zero? right) (error 'eval-expr "Division by zero") (quotient left right)))
-         ((%) (modulo left right))
-
-         ; Comparison operators
-         ((<) (< left right))
-         ((>) (> left right))
-         ((<=) (<= left right))
-         ((>=) (>= left right))
-         ((==) (= left right))
-         ((!=) (not (= left right)))
-
-         ; Boolean logic
-         ((&&) (and left right))
-         ((||) (or left right))
-
-         (else (error 'eval-expr "Unknown operator: ~a" op)))))
-
-    ; Invalid expressions
-    (else (error 'eval-expr "Unknown expression: ~a" expr))))
-
-; Evaluate a the value of an arithmetic expression
-(define int_eval
-  (lambda (expression)
-    (cond
-      ((number? expression) expression)
-      ((eq? '+ (operator expression)) (+ (firstoperand expression) (secondoperand expression)))
-      ((eq? '- (operator expression)) (- (firstoperand expression) (secondoperand expression)))
-      ((eq? '* (operator expression)) (* (firstoperand expression) (secondoperand expression)))
-      ((eq? '/ (operator expression)) (quotient (firstoperand expression) (secondoperand expression)))
-      ((eq? '% (operator expression)) (remainder (firstoperand expression) (secondoperand expression)))
-      (else (error 'bad-op "Invalid operator")))))
-
-; Abstractions
- 
-(define operator car)
-(define firstoperand cadr)
-(define secondoperand caddr)
-
-
-; Evaluate a boolean expression
-(define boolean_eval
-  (lambda (expression)
-    (cond
-      ((number? expression) expression)
-      ((eq? '< (operator expression)) (< (firstoperand expression) (secondoperand expression)))
-      ((eq? '> (operator expression)) (> (firstoperand expression) (secondoperand expression)))
-      ((eq? '<= (operator expression)) (<= (firstoperand expression) (secondoperand expression)))
-      ((eq? '>= (operator expression)) (>= (firstoperand expression) (secondoperand expression)))
-      ((eq? '== (operator expression)) (eq? (firstoperand expression) (secondoperand expression)))
-      ((eq? '!= (operator expression)) (eq? (eq? (firstoperand expression) (secondoperand expression)) #f))
-      ((eq? '&& (operator expression) (and firstoperand secondoperand)))
-      ((eq? '|| (operator expression) (or (car expression) (car (cdr expression)))))
-      (else (error 'bad-op "Invalid operator")))))
- 
-
-
-; Evaluate a single statement in the current state.
-(define stmt-eval
+;---------------------------------------------------------------
+; Processing: Statement Evaluation
+;---------------------------------------------------------------
+(define eval-stmt
   (lambda (stmt state)
     (cond
-    ; Handle return statement: (return <expr>)
-    ((and (list? stmt) (equal? (car stmt) 'return))
-     (let ([val (eval-expr (cadr stmt) state)])
-       (bind state 'return val)))
-
-    ; Handle variable declaration: (var <variable>) or (var <variable> <value>)
-    ((and (list? stmt) (equal? (car stmt) 'var))
-     (if (= (length stmt) 2)
-         (bind state (cadr stmt) '*unassigned*)  ;; Mark as unassigned
-         (bind state (cadr stmt) (eval-expr (caddr stmt) state))))
-
-    ; Handle assignment: (= <variable> <value>)
-    ((and (list? stmt) (equal? (car stmt) '=))
-     (update state (cadr stmt) (eval-expr (caddr stmt) state)))
-
-    ; Handle if statements: (if <condition> <then-stmt> <optional-else-stmt>)
-    ((and (list? stmt) (equal? (car stmt) 'if))
-     (let* ((condition (eval-expr (cadr stmt) state)))
-       (if condition
-           (eval-stmt (caddr stmt) state) ; Execute `then` branch
-           (if (= (length stmt) 4)
-               (eval-stmt (cadddr stmt) state) ; Execute `else` branch if present
-               state)))) ; No `else`, return unchanged state
-
-    ; Handle while statements: (while <condition> <body>)
-    ((and (list? stmt) (equal? (car stmt) 'while))
-     (let loop ([current-state state])
-       (if (eval-expr (cadr stmt) current-state)  ; Check condition
-           (loop (eval-stmt (caddr stmt) current-state))  ; Execute body, repeat
-           current-state)))  ; Exit loop when condition is false
-
-    ; Unknown statement
-    (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
-
-  
-(define (eval-stmt stmt state)
-  (cond
-    ; Handle return statement: (return <expr>)
-    ((and (list? stmt) (equal? (car stmt) 'return))
-     (let ([val (eval-expr (cadr stmt) state)])
-       (bind state 'return val)))
-
-    ; Handle variable declaration: (var <variable>) or (var <variable> <value>)
-    ((and (list? stmt) (equal? (car stmt) 'var))
-     (if (= (length stmt) 2)
-         (bind state (cadr stmt) '*unassigned*)  ; Mark as unassigned
-         (bind state (cadr stmt) (eval-expr (caddr stmt) state))))
-
-    ; Handle assignment: (= <variable> <value>)
-    ((and (list? stmt) (equal? (car stmt) '=))
-     (update state (cadr stmt) (eval-expr (caddr stmt) state)))
-
-    ; Handle if statements: (if <condition> <then-stmt> <optional-else-stmt>)
-    ((and (list? stmt) (equal? (car stmt) 'if))
-     (let* ((condition (eval-expr (cadr stmt) state)))
-       (if condition
-           (eval-stmt (caddr stmt) state) ;; Execute `then` branch
-           (if (= (length stmt) 4)
-               (eval-stmt (cadddr stmt) state) ;; Execute `else` branch if present
-               state)))) ;; No `else`, return unchanged state
-
-    ; Handle while statements: (while <condition> <body>)
-    ((and (list? stmt) (equal? (car stmt) 'while))
-     (let loop ([current-state state])
-       (if (eval-expr (cadr stmt) current-state)  ;; Check condition
-           (loop (eval-stmt (caddr stmt) current-state))  ;; Execute body, repeat
-           current-state)))  ;; Exit loop when condition is false
-
-    ; Unknown statement
-    (else (error 'eval-stmt "Unknown statement: ~a" stmt))))
+      ((and (list? stmt) (equal? (car stmt) 'return))
+       ((lambda (val)
+          (bind state 'return val))
+        (eval-expr (cadr stmt) state)))
+      ((and (list? stmt) (equal? (car stmt) 'var))
+       (if (= (length stmt) 2)
+           (bind state (cadr stmt) '*unassigned*)
+           (bind state (cadr stmt)
+                 (eval-expr (caddr stmt) state))))
+      ((and (list? stmt) (equal? (car stmt) '=))
+       (update state (cadr stmt)
+               (eval-expr (caddr stmt) state)))
+      ((and (list? stmt) (equal? (car stmt) 'if))
+       ((lambda (condition)
+          (if condition
+              (eval-stmt (caddr stmt) state)
+              (if (= (length stmt) 4)
+                  (eval-stmt (cadddr stmt) state)
+                  state)))
+        (eval-expr (cadr stmt) state)))
+      ((and (list? stmt) (equal? (car stmt) 'while))
+       (while-loop state stmt))
+      (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
 
 
-
-
-
-; Evaluate a list of statements sequentially.
-(define stmts_eval
-  (lambda (stmts state)
+; Updated eval-stmt function to change states based using statement(s)
+(define eval-stmt
+  (lambda (stmt state return)
     (cond
-    ((null? stmts) state)
-    (else
-     (let ([new-state (eval-stmt (car stmts) state)])
-       (if (assoc 'return new-state)   ; Stop if return encountered
-           new-state
-           (eval-statements (cdr stmts) new-state)))))))
-  
-  
-(define (eval-statements stmts state)
-  (cond
-    ((null? stmts) state)
-    (else
-     (let ([new-state (eval-stmt (car stmts) state)])
-       (if (assoc 'return new-state)   ; Stop if return encountered
-           new-state
-           (eval-statements (cdr stmts) new-state))))))
+      ((list? (car stmt)) (eval-stmt (car stmt) state (lambda (v1) eval-stmt (cdr stmt) (lambda (v2) (return (cons v1 v2))))))
+      ((equal? (car stmt) 'begin) (eval-stmt (cdr stmt) (add-layer state) return))
+      ;((equal? (car stmt) #\}) (eval-stmt (cdr stmt) (remove-layer state) return))
+      ((equal? (car stmt) '=) ())
+      ((equal? (car stmt) 'return) ())
+      ((equal? (car stmt) 'break) (eval-stmt (cdr stmt) (remove-layer state) return))
+      ((equal? (car stmt) 'throw) ())
+      ((equal? (car stmt) 'continue) ())
+      ((equal? (car stmt) 'if) ())
+      ((equal? (car stmt) 'while) (while-loop state stmt))
+      (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
+      
 
+; Define a helper function for while loops.
+(define while-loop
+  (lambda (state stmt)
+    (if (eval-expr (cadr stmt) state)
+        (while-loop (eval-stmt (caddr stmt) state) stmt)
+        state)))
 
-; MAIN FUNCTIONS
+; Define a helper for if statements.
+(define if
+  (lambda (state stmt)
+    (if condition)))
 
-(define return
+(define eval-statements
+  (lambda (stmts state)
+    (if (null? stmts)
+        state
+        ((lambda (new-state)
+           (if (my-assoc 'return new-state)
+               new-state
+               (eval-statements (cdr stmts) new-state)))
+         (eval-stmt (car stmts) state)))))
+
+;---------------------------------------------------------------
+; Main Functionality
+;---------------------------------------------------------------
+(define normalize-return
   (lambda (val)
     (cond
-    ((equal? val #t) 'true) 
-    ((equal? val #f) 'false) 
-    (else val))))             
-
-    
-(define (normalize-return val)
-  (cond
-    ((equal? val #t) 'true)  
-    ((equal? val #f) 'false) 
-    (else val)))             
+      ((equal? val #t) 'true)
+      ((equal? val #f) 'false)
+      (else val))))
 
 (define interpret
   (lambda (filename)
-    (let* ([parse-tree (parser filename)]
-         [initial-state (make-empty-state)]
-         [final-state (eval-statements parse-tree initial-state)])
-    (normalize-return (lookup final-state 'return)))))
-
-(define (interprett filename)
-  (let* ([parse-tree (parser filename)]
-         [initial-state (make-empty-state)]
-         [final-state (eval-statements parse-tree initial-state)])
-    (normalize-return (lookup final-state 'return))))
+    ((lambda (parse-tree)
+       ((lambda (initial-state)
+          ((lambda (final-state)
+             (normalize-return (lookup final-state 'return)))
+           (eval-statements parse-tree initial-state)))
+        (make-empty-state)))
+     (parser filename))))
