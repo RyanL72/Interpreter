@@ -1,7 +1,5 @@
 #lang racket
 
-#lang racket
-
 ; Myah Potter and Ryan Lin
 
 (require "simpleParser.rkt")
@@ -16,21 +14,29 @@
 
 (define lookup
   (lambda (state var)
-    ((lambda (binding)
-       (if (not binding)
-           (error 'lookup "Variable ~a not declared" var)
-           ((lambda (value)
-              (if (equal? value '*unassigned*)
-                  (error 'lookup "Variable ~a used before assignment" var)
-                  value))
-            (cdr binding))))
-     (my-assoc var state))))
+    (let loop ((layers state))
+      (cond
+        ((null? layers)
+         (error 'lookup "Variable ~a not declared" var))
+        ((my-assoc var (car layers)) =>
+         (lambda (binding)
+           (let ((val (cdr binding)))
+             (if (equal? val '*unassigned*)
+                 (error 'lookup "Variable ~a used before assignment" var)
+                 val))))
+        (else (loop (cdr layers)))))))
+
 
 (define bind
   (lambda (state var val)
-    (if (my-assoc var state)
-        (error 'bind "Variable ~a already declared" var)
-        (cons (cons var val) state))))
+    (if (my-assoc var (car state))
+        (error 'bind "Variable ~a already declared in this scope" var)
+        (cons (cons var val) (car state)))))
+
+(define push-binding
+  (lambda (state var val)
+    (cons (cons var val) (car state))))
+
 
 (define my-assoc
   (lambda (key alist)
@@ -39,15 +45,24 @@
       ((equal? (car (car alist)) key) (car alist))
       (else (my-assoc key (cdr alist))))))
 
+
 (define update
   (lambda (state var val)
-    (if (not (my-assoc var state))
-        (error 'update "Variable ~a not declared" var)
-        (map (lambda (pair)
-               (if (equal? (car pair) var)
-                   (cons var val)
-                   pair))
-             state))))
+    (let loop ((layers state) (acc '()))
+      (cond
+        ((null? layers)
+         (error 'update "Variable ~a not declared" var))
+        ((my-assoc var (car layers))
+         ;; found it, update binding in this layer
+         (let* ((updated-layer
+                 (map (lambda (pair)
+                        (if (equal? (car pair) var)
+                            (cons var val)
+                            pair))
+                      (car layers))))
+           (append (reverse acc) (cons updated-layer (cdr layers)))))
+        (else (loop (cdr layers) (cons (car layers) acc)))))))
+
 
 ;---------------------------------------------------------------
 ; Processing: Expression Evaluation
