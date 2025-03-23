@@ -102,13 +102,16 @@
 ; Statement Evaluation
 ;---------------------------------------------------------------
 (define eval-stmt
-  (lambda (stmt state return-cont continue-cont)
+  (lambda (stmt state return-cont continue-cont break-cont)
     (cond
       ((and (list? stmt) (equal? (car stmt) 'return))
        (return-cont (eval-expr (cadr stmt) state)))
 
       ((and (list? stmt) (equal? (car stmt) 'continue))
        (continue-cont state))
+
+      ((and (list? stmt) (equal? (car stmt) 'break))
+       (break-cont state))
 
       ((and (list? stmt) (equal? (car stmt) 'var))
        (let ((var (cadr stmt))
@@ -122,38 +125,38 @@
 
       ((and (list? stmt) (equal? (car stmt) 'if))
        (if (eval-expr (cadr stmt) state)
-           (eval-stmt (caddr stmt) state return-cont continue-cont)
+           (eval-stmt (caddr stmt) state return-cont continue-cont break-cont)
            (if (= (length stmt) 4)
-               (eval-stmt (cadddr stmt) state return-cont continue-cont)
+               (eval-stmt (cadddr stmt) state return-cont continue-cont break-cont)
                state)))
 
       ((and (list? stmt) (equal? (car stmt) 'while))
-       (while-loop state stmt return-cont))
+       (call/cc
+        (lambda (break-cont-inner)
+          (define (loop current-state)
+            (if (eval-expr (cadr stmt) current-state)
+                (call/cc
+                 (lambda (continue-cont-inner)
+                   (let ((new-state (eval-stmt (caddr stmt) current-state return-cont continue-cont-inner break-cont-inner)))
+                     (loop new-state))))
+                current-state))
+          (loop state))))
 
       ((and (list? stmt) (equal? (car stmt) 'begin))
        (let* ((new-layer '())
               (new-state (cons new-layer state))
-              (final-state (eval-statements (cdr stmt) new-state return-cont continue-cont)))
+              (final-state (eval-statements (cdr stmt) new-state return-cont continue-cont break-cont)))
          (cdr final-state)))
 
       (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
 
 
-(define while-loop
-  (lambda (state stmt return-cont)
-    (if (eval-expr (cadr stmt) state)
-        (call/cc
-         (lambda (continue-cont)
-           (let ((new-state (eval-stmt (caddr stmt) state return-cont continue-cont)))
-             (while-loop new-state stmt return-cont))))
-        state)))
-
 (define eval-statements
-  (lambda (stmts state return-cont continue-cont)
+  (lambda (stmts state return-cont continue-cont break-cont)
     (if (null? stmts)
         state
-        (let ((new-state (eval-stmt (car stmts) state return-cont continue-cont)))
-          (eval-statements (cdr stmts) new-state return-cont continue-cont)))))
+        (let ((new-state (eval-stmt (car stmts) state return-cont continue-cont break-cont)))
+          (eval-statements (cdr stmts) new-state return-cont continue-cont break-cont)))))
 
 
 ;---------------------------------------------------------------
@@ -172,5 +175,4 @@
       (call/cc
        (lambda (return-cont)
          (let ((initial-state (make-empty-state)))
-           (eval-statements parse-tree initial-state return-cont (lambda (s) s)))))))
-
+           (eval-statements parse-tree initial-state return-cont (lambda (s) s) (lambda (s) s)))))))
