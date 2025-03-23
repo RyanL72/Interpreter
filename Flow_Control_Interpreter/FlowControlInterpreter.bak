@@ -1,0 +1,226 @@
+#lang racket
+
+; Myah Potter and Ryan Lin
+
+(require "simpleParser.rkt")
+(require "lex.rkt")
+
+;---------------------------------------------------------------
+; State Management (Layered for Block Scoping)
+;---------------------------------------------------------------
+
+; The state is now a list of layers (each layer is an association list)
+(define make-empty-state
+  (lambda () (list '())))  ; one initial empty layer
+
+(define push-block
+  (lambda (state)
+    (cons '() state)))       ; push a new, empty layer
+
+(define pop-block
+  (lambda (state)
+    (if (null? state)
+        (error 'pop-block "No block to pop")
+        (cdr state))))
+
+; Lookup: search each layer (top first) for the binding
+(define lookup
+  (lambda (state var)
+    (define (search layers)
+      (if (null? layers)
+          (error 'lookup "Variable ~a not declared" var)
+          (let ([binding (assoc var (car layers))])
+            (if binding
+                (if (equal? (cdr binding) '*unassigned*)
+                    (error 'lookup "Variable ~a used before assignment" var)
+                    (cdr binding))
+                (search (cdr layers))))))
+    (search state)))
+
+; Bind a variable in the top layer only.
+(define bind
+  (lambda (state var val)
+    (let ([top (car state)]
+          [rest (cdr state)])
+      (if (assoc var top)
+          (error 'bind "Variable ~a already declared" var)
+          (cons (cons var val top) rest)))))
+
+; Update: search layers and update the first binding found.
+(define update
+  (lambda (state var val)
+    (define (update-layers layers)
+      (if (null? layers)
+          (error 'update "Variable ~a not declared" var)
+          (let ([top (car layers)]
+                 [rest (cdr layers)])
+            (if (assoc var top)
+                (cons (map (lambda (pair)
+                             (if (equal? (car pair) var)
+                                 (cons var val)
+                                 pair))
+                           top)
+                      rest)
+                (cons top (update-layers rest))))))
+    (update-layers state)))
+
+;---------------------------------------------------------------
+; Expression Evaluation
+;---------------------------------------------------------------
+(define eval-expr
+  (lambda (expr state)
+    (cond
+      ((number? expr) expr)
+      ((equal? expr 'true) #t)
+      ((equal? expr 'false) #f)
+      ((symbol? expr) (lookup state expr))
+      ((and (list? expr) (= (length expr) 2) (equal? (car expr) '-))
+       (- (eval-expr (cadr expr) state)))
+      ((and (list? expr) (= (length expr) 2) (equal? (car expr) '!))
+       (not (eval-expr (cadr expr) state)))
+      ((and (list? expr) (= (length expr) 3))
+       ((lambda (op left right)
+          (case op
+            ((+) (+ left right))
+            ((-) (- left right))
+            ((*) (* left right))
+            ((/) (if (zero? right)
+                     (error 'eval-expr "Division by zero")
+                     (quotient left right)))
+            ((%) (modulo left right))
+            ((<) (< left right))
+            ((>) (> left right))
+            ((<=) (<= left right))
+            ((>=) (>= left right))
+            ((==) (= left right))
+            ((!=) (not (= left right)))
+            ((&&) (and left right))
+            ((||) (or left right))
+            (else (error 'eval-expr "Unknown operator: ~a" op))))
+        (car expr)
+        (eval-expr (cadr expr) state)
+        (eval-expr (caddr expr) state)))
+      (else (error 'eval-expr "Unknown expression: ~a" expr)))))
+
+;---------------------------------------------------------------
+; Statement Evaluation with Continuations
+; Now each eval-stmt takes four extra parameters:
+;   return-cont, break-cont, continue-cont, throw-cont
+;---------------------------------------------------------------
+(define eval-stmt
+  (lambda (stmt state return-cont break-cont continue-cont throw-cont)
+    (cond
+      ; Return: immediately invoke the return-cont with the computed value.
+      ((and (list? stmt) (equal? (car stmt) 'return))
+       (return-cont (eval-expr (cadr stmt) state)))
+      
+      ; Variable declaration.
+      ((and (list? stmt) (equal? (car stmt) 'var))
+       (if (= (length stmt) 2)
+           (bind state (cadr stmt) '*unassigned*)
+           (bind state (cadr stmt) (eval-expr (caddr stmt) state))))
+      
+      ; Assignment.
+      ((and (list? stmt) (equal? (car stmt) '=))
+       (update state (cadr stmt) (eval-expr (caddr stmt) state)))
+      
+      ; If statement.
+      ((and (list? stmt) (equal? (car stmt) 'if))
+       (if (eval-expr (cadr stmt) state)
+           (eval-stmt (caddr stmt) state return-cont break-cont continue-cont throw-cont)
+           (if (= (length stmt) 4)
+               (eval-stmt (cadddr stmt) state return-cont break-cont continue-cont throw-cont)
+               state)))
+      
+      ; While loop.
+      ((and (list? stmt) (equal? (car stmt) 'while))
+       (while-loop state stmt return-cont break-cont continue-cont throw-cont))
+      
+      ; Break: use break continuation.
+      ((and (symbol? stmt) (equal? stmt 'break))
+       (break-cont 'break))
+      
+      ; Continue: use continue continuation.
+      ((and (symbol? stmt) (equal? stmt 'continue))
+       (continue-cont 'continue))
+      
+      ; Throw: immediately call throw continuation with the evaluated exception.
+      ((and (list? stmt) (equal? (car stmt) 'throw))
+       (throw-cont (eval-expr (cadr stmt) state)))
+      
+      ; Block: (block stmt1 stmt2 ...) creates a new scope.
+      ((and (list? stmt) (equal? (car stmt) 'block))
+       (let ([new-state (push-block state)])
+         (let ([result (eval-statements (cdr stmt) new-state return-cont break-cont continue-cont throw-cont)])
+           (pop-block result))))
+      
+      ; Try-Catch-Finally:
+      ; Format: (try try-block (catch (ex) catch-block) (finally finally-block))
+      ((and (list? stmt) (equal? (car stmt) 'try))
+       (let* ([try-block (cadr stmt)]
+              [catch-clause (caddr stmt)]  ; expect: (catch (ex) catch-block)
+              [finally-clause (if (null? (cadddr stmt)) '() (cadddr stmt))])
+         (call/cc (lambda (local-throw-cont)
+           (define new-throw-cont
+             (lambda (ex)
+               (eval-stmt (caddr catch-clause)
+                          (bind state (car (cadr catch-clause)) ex)
+                          return-cont break-cont continue-cont throw-cont)))
+           (let ([try-result (eval-stmt try-block state return-cont break-cont continue-cont new-throw-cont)])
+             (if (null? finally-clause)
+                 try-result
+                 (begin
+                   (eval-stmt finally-clause state return-cont break-cont continue-cont throw-cont)
+                   try-result)))))))
+      
+      (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
+
+; Evaluate a list of statements, passing along the continuations.
+(define eval-statements
+  (lambda (stmts state return-cont break-cont continue-cont throw-cont)
+    (if (null? stmts)
+        state
+        (let ([new-state (eval-stmt (car stmts) state return-cont break-cont continue-cont throw-cont)])
+          (eval-statements (cdr stmts) new-state return-cont break-cont continue-cont throw-cont)))))
+
+;---------------------------------------------------------------
+; While Loop using call/cc for Break/Continue
+;---------------------------------------------------------------
+(define while-loop
+  (lambda (state stmt return-cont outer-break-cont continue-cont throw-cont)
+    (call/cc (lambda (loop-break-cont)
+      (define (loop current-state)
+        (if (not (eval-expr (cadr stmt) current-state))
+            current-state
+            (call/cc (lambda (loop-continue-cont)
+              (let ([new-state (eval-stmt (caddr stmt) current-state return-cont
+                                           ; Override break to exit loop:
+                                           (lambda (v) (loop-break-cont v))
+                                           ; Override continue to restart loop with current state:
+                                           (lambda (v) (loop current-state))
+                                           throw-cont)])
+                (loop new-state))))))
+      (loop state))))
+
+;---------------------------------------------------------------
+; Main Functionality
+;---------------------------------------------------------------
+(define normalize-return
+  (lambda (val)
+    (cond
+      ((equal? val #t) 'true)
+      ((equal? val #f) 'false)
+      (else val))))
+
+; Top-level interpreter.
+(define interpret
+  (lambda (filename)
+    (call/cc (lambda (return-cont)
+      (let* ([parse-tree (parser filename)]
+             [initial-state (make-empty-state)]
+             [final-state (eval-statements parse-tree initial-state
+                                           return-cont
+                                           (lambda (v) (error 'interpret "Break outside loop"))
+                                           (lambda (v) (error 'interpret "Continue outside loop"))
+                                           (lambda (v) (error 'interpret "Uncaught throw: ~a" v)))]
+        (normalize-return (lookup final-state 'return)))))))
