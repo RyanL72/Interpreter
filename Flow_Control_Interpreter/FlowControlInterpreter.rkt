@@ -7,10 +7,16 @@
 
 
 ;---------------------------------------------------------------
-; State Management
+; State Management (Layered)
 ;---------------------------------------------------------------
-(define make-empty-state
-  (lambda () '()))
+(define make-empty-state (lambda () '(())))
+
+(define my-assoc
+  (lambda (key alist)
+    (cond
+      ((null? alist) #f)
+      ((equal? (car (car alist)) key) (car alist))
+      (else (my-assoc key (cdr alist))))))
 
 (define lookup
   (lambda (state var)
@@ -26,7 +32,6 @@
                  val))))
         (else (loop (cdr layers)))))))
 
-
 (define bind
   (lambda (state var val)
     (if (my-assoc var (car state))
@@ -37,15 +42,6 @@
   (lambda (state var val)
     (cons (cons var val) (car state))))
 
-
-(define my-assoc
-  (lambda (key alist)
-    (cond
-      ((null? alist) #f)
-      ((equal? (car (car alist)) key) (car alist))
-      (else (my-assoc key (cdr alist))))))
-
-
 (define update
   (lambda (state var val)
     (let loop ((layers state) (acc '()))
@@ -53,7 +49,6 @@
         ((null? layers)
          (error 'update "Variable ~a not declared" var))
         ((my-assoc var (car layers))
-         ;; found it, update binding in this layer
          (let* ((updated-layer
                  (map (lambda (pair)
                         (if (equal? (car pair) var)
@@ -65,7 +60,7 @@
 
 
 ;---------------------------------------------------------------
-; Processing: Expression Evaluation
+; Expression Evaluation
 ;---------------------------------------------------------------
 (define eval-expr
   (lambda (expr state)
@@ -102,55 +97,67 @@
         (eval-expr (caddr expr) state)))
       (else (error 'eval-expr "Unknown expression: ~a" expr)))))
 
+
 ;---------------------------------------------------------------
-; Processing: Statement Evaluation
+; Statement Evaluation
 ;---------------------------------------------------------------
 (define eval-stmt
-  (lambda (stmt state)
+  (lambda (stmt state return-cont continue-cont)
     (cond
       ((and (list? stmt) (equal? (car stmt) 'return))
-       ((lambda (val)
-          (bind state 'return val))
-        (eval-expr (cadr stmt) state)))
+       (return-cont (eval-expr (cadr stmt) state)))
+
+      ((and (list? stmt) (equal? (car stmt) 'continue))
+       (continue-cont state))
+
       ((and (list? stmt) (equal? (car stmt) 'var))
-       (if (= (length stmt) 2)
-           (bind state (cadr stmt) '*unassigned*)
-           (bind state (cadr stmt)
-                 (eval-expr (caddr stmt) state))))
+       (let ((var (cadr stmt))
+             (val (if (= (length stmt) 2) '*unassigned*
+                      (eval-expr (caddr stmt) state))))
+         (cons (cons (cons var val) (car state)) (cdr state))))
+
       ((and (list? stmt) (equal? (car stmt) '=))
        (update state (cadr stmt)
                (eval-expr (caddr stmt) state)))
+
       ((and (list? stmt) (equal? (car stmt) 'if))
-       ((lambda (condition)
-          (if condition
-              (eval-stmt (caddr stmt) state)
-              (if (= (length stmt) 4)
-                  (eval-stmt (cadddr stmt) state)
-                  state)))
-        (eval-expr (cadr stmt) state)))
+       (if (eval-expr (cadr stmt) state)
+           (eval-stmt (caddr stmt) state return-cont continue-cont)
+           (if (= (length stmt) 4)
+               (eval-stmt (cadddr stmt) state return-cont continue-cont)
+               state)))
+
       ((and (list? stmt) (equal? (car stmt) 'while))
-       (while-loop state stmt))
+       (while-loop state stmt return-cont))
+
+      ((and (list? stmt) (equal? (car stmt) 'begin))
+       (let* ((new-layer '())
+              (new-state (cons new-layer state))
+              (final-state (eval-statements (cdr stmt) new-state return-cont continue-cont)))
+         (cdr final-state)))
+
       (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
 
-; Define a helper function for while loops.
+
 (define while-loop
-  (lambda (state stmt)
+  (lambda (state stmt return-cont)
     (if (eval-expr (cadr stmt) state)
-        (while-loop (eval-stmt (caddr stmt) state) stmt)
+        (call/cc
+         (lambda (continue-cont)
+           (let ((new-state (eval-stmt (caddr stmt) state return-cont continue-cont)))
+             (while-loop new-state stmt return-cont))))
         state)))
 
 (define eval-statements
-  (lambda (stmts state)
+  (lambda (stmts state return-cont continue-cont)
     (if (null? stmts)
         state
-        ((lambda (new-state)
-           (if (my-assoc 'return new-state)
-               new-state
-               (eval-statements (cdr stmts) new-state)))
-         (eval-stmt (car stmts) state)))))
+        (let ((new-state (eval-stmt (car stmts) state return-cont continue-cont)))
+          (eval-statements (cdr stmts) new-state return-cont continue-cont)))))
+
 
 ;---------------------------------------------------------------
-; Main Functionality
+; Main
 ;---------------------------------------------------------------
 (define normalize-return
   (lambda (val)
@@ -161,10 +168,9 @@
 
 (define interpret
   (lambda (filename)
-    ((lambda (parse-tree)
-       ((lambda (initial-state)
-          ((lambda (final-state)
-             (normalize-return (lookup final-state 'return)))
-           (eval-statements parse-tree initial-state)))
-        (make-empty-state)))
-     (parser filename))))
+    (let ((parse-tree (parser filename)))
+      (call/cc
+       (lambda (return-cont)
+         (let ((initial-state (make-empty-state)))
+           (eval-statements parse-tree initial-state return-cont (lambda (s) s)))))))
+
