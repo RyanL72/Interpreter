@@ -61,16 +61,18 @@
   (lambda (state var val)
     (cond
       ((eq? (my-assoc var state) #t) (error 'bind "Variable ~a already declared" var))
-      ((list? (car state)) (append (cons var val) (car state)))
-      (else (cons (cons var val) state)))))
+      ((null? state) (cons (cons var val) state))
+      ((list? (car state)) (append (cons var val) (car state))))))
+      ;(else (cons (cons var val) state)))))
 
 (define my-assoc
   (lambda (key alist)
     (cond
       ((null? alist) #f)
-      ((list? alist) (my-assoc (car alist)) (my-assoc (cdr alist)))
-      ((equal? (car (car alist)) key) (car alist))
-      (else (my-assoc key (cdr alist))))))
+      ((list? alist) alist))))
+      ;((not (pair? (car alist))) (my-assoc key (cdr alist)));((list? alist) (my-assoc key (car alist)) (my-assoc key (cdr alist)))
+      ;((equal? (car (car alist)) key) (car alist))
+      ;(else (my-assoc key (cdr alist))))))
 
 (define update
   (lambda (state var val)
@@ -134,7 +136,7 @@
 ;---------------------------------------------------------------
 ; Processing: Statement Evaluation
 ;---------------------------------------------------------------
-(define eval-stmt
+(define eval-stmtx
   (lambda (stmt state)
     (cond
       ((and (list? stmt) (equal? (car stmt) 'return))
@@ -166,18 +168,23 @@
 (define eval-stmt
   (lambda (stmt state return)
     (cond
-      ((list? (car stmt)) (eval-stmt (car stmt) state (lambda (v1) eval-stmt (cdr stmt) (lambda (v2) (return (cons v1 v2))))))
+      ((list? (car stmt)) (eval-stmt (car stmt) state (lambda (v1) (eval-stmt (cdr stmt) (lambda (v2) (return (cons v1 v2)))))))
       ((equal? (car stmt) 'begin) (eval-stmt (cdr stmt) (add-layer state) return))
       ;((equal? (car stmt) #\}) (eval-stmt (cdr stmt) (remove-layer state) return))
-      ((equal? (car stmt) '=) ())
-      ((equal? (car stmt) 'return) ())
+      ((and (list? stmt) (equal? (car stmt) 'var))
+      (if (= (length stmt) 2)
+           (bind state (cadr stmt) '*unassigned*)
+           (bind state (cadr stmt)
+                 (eval-expr (caddr stmt) state))))
+      ((equal? (car stmt) '=) (eval-stmt (cdr stmt) (bind state (cadr stmt) (caadr stmt)) return))
+      ((equal? (car stmt) 'return) (bind 'return (cadr stmt)) (eval-expr (cadr stmt) state))
       ((equal? (car stmt) 'break) (eval-stmt (cdr stmt) (remove-layer state) return))
-      ((equal? (car stmt) 'throw) ())
-      ((equal? (car stmt) 'continue) ())
-      ((equal? (car stmt) 'if) ())
+      ((equal? (car stmt) 'throw) (return))
+      ((equal? (car stmt) 'continue) (return))
+      ((equal? (car stmt) 'if) (if-stmt state stmt) (eval-expr (cadr stmt) state))
       ((equal? (car stmt) 'while) (while-loop state stmt))
-      (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
-      
+      (else `(error 'eval-stmt "Unknown statement: ~a" stmt)))))
+
 
 ; Define a helper function for while loops.
 (define while-loop
@@ -187,9 +194,12 @@
         state)))
 
 ; Define a helper for if statements.
-(define if
-  (lambda (state stmt)
-    (if condition)))
+(define if-stmt
+ (lambda (state stmt)
+    (if (equal? (cadr stmt) #t)
+      (eval-stmt (caadr stmt) state)
+       (if (= (length stmt) 4)
+         (eval-stmt (cadddr stmt) state) state))))
 
 (define eval-statements
   (lambda (stmts state)
@@ -199,7 +209,7 @@
            (if (my-assoc 'return new-state)
                new-state
                (eval-statements (cdr stmts) new-state)))
-         (eval-stmt (car stmts) state)))))
+         (eval-stmt (car stmts) state (lambda (v) v))))))
 
 ;---------------------------------------------------------------
 ; Main Functionality
