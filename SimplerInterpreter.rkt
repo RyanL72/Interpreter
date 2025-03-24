@@ -56,15 +56,14 @@
   (lambda (state var val)
     (cond
       ((eq? (my-assoc var state) #t) (error 'bind "Variable ~a already declared" var))
-      ((eq? '() state) (cons (cons var val) state))
-      ((list? (car state)) (append (cons var val) (car state))))))
-      (else (cons (cons var val) state)))))
+      ((eq? '() state) (cons (cons (cons var val) '()) state))
+      ;((list? (car state)) (append (cons var val) (car state))))))
+      (else (cons (cons (cons var val) (car state)) (cdr state))))))
 
 (define my-assoc
   (lambda (key alist)
     (cond
       ((null? alist) #f)
-      ((list? alist) alist))))
       ((assoc key (car alist)) (assoc key (car alist))) ;((list? alist) (my-assoc key (car alist)) (my-assoc key (cdr alist)))
       (else (my-assoc key (cdr alist))))))
 
@@ -72,10 +71,12 @@
   (lambda (state var val)
     (if (not (my-assoc var state))
         (error 'update "Variable ~a not declared" var)
-        (map (lambda (pair)
+        (map (lambda (layer)
+          (map (lambda (pair)
                (if (equal? (car pair) var)
                    (cons var val)
                    pair))
+               layer))
              state))))
 
 (define add-layer
@@ -131,7 +132,7 @@
 ; Processing: Statement Evaluation
 ;---------------------------------------------------------------
 (define eval-stmt
-  (lambda (stmt state)
+  (lambda (stmt state return)
     (cond
       ((and (list? stmt) (equal? (car stmt) 'return))
        ((lambda (val)
@@ -148,15 +149,27 @@
       ((and (list? stmt) (equal? (car stmt) 'if))
        ((lambda (condition)
           (if condition
-              (eval-stmt (caddr stmt) state)
+              (eval-stmt (caddr stmt) state return)
               (if (= (length stmt) 4)
-                  (eval-stmt (cadddr stmt) state)
+                  (eval-stmt (cadddr stmt) state return)
                   state)))
         (eval-expr (cadr stmt) state)))
       ((and (list? stmt) (equal? (car stmt) 'while))
        (while-loop state stmt))
+      ((equal? (car stmt) 'break) (eval-stmt (cdr stmt) (remove-layer state) return))
+      ((equal? (car stmt) 'begin) (eval-stmt (cdr stmt) (add-layer state) return))
       (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
 
+(define eval-special-stmt
+  (lambda (stmt state return)
+    (cond
+      ((equal? (car stmt) 'begin) (eval-special-stmt (cdr stmt) (add-layer stmt) return))
+      ((equal? (car stmt) 'break) (eval-special-stmt (cdr stmt) (remove-layer stmt) return))
+      ((equal? (car stmt) 'throw) (return))
+      ((equal? (car stmt) 'try) (return))
+      ((equal? (car stmt) 'catch) (return))
+      ((equal? (car stmt) 'continue) (return))
+      ((equal? (car stmt) 'return) (return)))))
 
 ; Updated eval-stmt function to change states based using statement(s)
 (define eval-stmtx
