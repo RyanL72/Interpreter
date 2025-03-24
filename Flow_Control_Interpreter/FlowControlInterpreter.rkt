@@ -1,5 +1,5 @@
 #lang racket
-;; Alternative interpreter with try/catch/finally and throw
+;; Alternative interpreter with try/catch/finally, throw, and proper handling of try-block sequences
 
 (require "simpleParser.rkt")
 (require "lex.rkt")
@@ -169,33 +169,58 @@
     
     ;; Try-catch-finally statement
     ((and (list? stmt) (equal? (car stmt) 'try))
-     (let* ((try-block (cadr stmt))
-            (catch-clause (caddr stmt))   ; expected form: (catch e <catch-block>)
-            (finally-clause (cadddr stmt)) ; expected form: (finally <finally-block>)
-            (result-try (eval-stmt try-block state))
-            (result-after-catch
-             (if (thrown? result-try)
-                 (let* ((ex (thrown-value result-try))
-                        (throw-state (thrown-state result-try))
-                        (catch-var (cadr catch-clause))
-                        (catch-body (caddr catch-clause))
-                        (catch-state (cons (list (list catch-var ex)) throw-state)))
-                   (eval-stmt catch-body catch-state))
-                 result-try))
-            (state-for-finally (cond
-                                 [(normal? result-after-catch) (normal-state result-after-catch)]
-                                 [(thrown? result-after-catch) (thrown-state result-after-catch)]
-                                 [else (error "Invalid control result in try-catch" result-after-catch)]))
-            (result-finally (eval-stmt (cadr finally-clause) state-for-finally)))
-       (cond
-         [(not (normal? result-finally))
-          result-finally]
-         [else
-          (if (normal? result-after-catch)
-              (normal (normal-state result-finally))
-              (thrown (thrown-value result-after-catch) (normal-state result-finally)))])))
+     (if (< (length stmt) 4)
+         (error 'eval-stmt "Invalid try statement structure: ~a" stmt)
+         (let* ((try-block (cadr stmt))
+                ;; If try-block is a sequence of statements (i.e. a list of lists),
+                ;; then evaluate it with eval-statements; otherwise, use eval-stmt.
+                (result-try (if (and (list? try-block)
+                                     (not (null? try-block))
+                                     (list? (car try-block)))
+                                (eval-statements try-block state)
+                                (eval-stmt try-block state)))
+                (catch-clause (caddr stmt))   ; expected: (catch e <catch-block>)
+                (finally-clause (cadddr stmt)) ; expected: (finally <finally-block>)
+                (result-after-catch
+                 (if (thrown? result-try)
+                     (let* ((ex (thrown-value result-try))
+                            (throw-state (thrown-state result-try))
+                            (catch-var (if (and (list? catch-clause)
+                                                (>= (length catch-clause) 3)
+                                                (equal? (car catch-clause) 'catch))
+                                           (cadr catch-clause)
+                                           (error 'eval-stmt "Invalid catch clause: ~a" catch-clause)))
+                            (catch-body (if (and (list? catch-clause)
+                                                  (>= (length catch-clause) 3))
+                                           (caddr catch-clause)
+                                           (error 'eval-stmt "Invalid catch clause: ~a" catch-clause)))
+                            (catch-state (cons (list (cons catch-var ex)) throw-state)))
+                       (eval-stmt catch-body catch-state))
+                     result-try))
+                (state-for-finally
+                 (cond
+                   [(normal? result-after-catch) (normal-state result-after-catch)]
+                   [(thrown? result-after-catch) (thrown-state result-after-catch)]
+                   [else (error 'eval-stmt "Invalid control result in try-catch: ~a" result-after-catch)]))
+                (finally-body (if (and (list? finally-clause)
+                                        (>= (length finally-clause) 2)
+                                        (equal? (car finally-clause) 'finally))
+                                  (cadr finally-clause)
+                                  finally-clause))
+                (result-finally (eval-stmt finally-body state-for-finally)))
+           (cond
+             [(not (normal? result-finally))
+              result-finally]
+             [else
+              (if (normal? result-after-catch)
+                  (normal (normal-state result-finally))
+                  (thrown (thrown-value result-after-catch) (normal-state result-finally)))])))))
     
-    (else (error 'eval-stmt "Unknown statement: ~a" stmt))))
+    ;; Debug: Unknown statement structure
+    (else (begin
+            (displayln "Unknown statement structure:")
+            (displayln stmt)
+            (error 'eval-stmt "Unknown statement: ~a" stmt)))))
 
 (define (eval-statements stmts state)
   (if (null? stmts)
@@ -223,12 +248,9 @@
     (let ((result (eval-statements parse-tree (make-empty-state))))
       (cond
         [(normal? result)
-         (let ((final (normal-state result)))
-           (normalize-return final))]
+         (normalize-return (normal-state result))]
         [(return? result) (normalize-return (return-value result))]
         [(thrown? result) (error "Uncaught exception:" (thrown-value result))]
         [else (error "Unexpected control flow at top level" result)]))))
 
 ;; End of interpreter code.
-
-
