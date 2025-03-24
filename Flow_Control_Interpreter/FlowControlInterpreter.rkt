@@ -1,14 +1,17 @@
 #lang racket
-;; Alternative interpreter using explicit control-flow result wrappers
+;; Alternative interpreter with try/catch/finally and throw
 
 (require "simpleParser.rkt")
 (require "lex.rkt")
 
-;; Define result wrappers for normal execution and control flow signals
+;;---------------------------------------------------------------
+;; Control-Flow Result Structures
+;;---------------------------------------------------------------
 (struct normal (state) #:transparent)
 (struct break (state) #:transparent)
 (struct continue (state) #:transparent)
 (struct return (value) #:transparent)
+(struct thrown (value state) #:transparent)
 
 ;;---------------------------------------------------------------
 ;; State Management (Layered)
@@ -101,22 +104,27 @@
       (else (error 'eval-expr "Unknown expression: ~a" expr)))))
 
 ;;---------------------------------------------------------------
-;; Statement Evaluation using explicit result propagation
+;; Statement Evaluation with Exception Handling
 ;;---------------------------------------------------------------
 (define (eval-stmt stmt state)
   (cond
-    ;; Return statement: immediately produce a return result.
+    ;; Return statement
     ((and (list? stmt) (equal? (car stmt) 'return))
      (return (eval-expr (cadr stmt) state)))
     
-    ;; Continue and break just tag the state.
+    ;; Continue statement
     ((and (list? stmt) (equal? (car stmt) 'continue))
      (continue state))
     
+    ;; Break statement
     ((and (list? stmt) (equal? (car stmt) 'break))
      (break state))
     
-    ;; Variable declaration: create a new binding.
+    ;; Throw statement
+    ((and (list? stmt) (equal? (car stmt) 'throw))
+     (thrown (eval-expr (cadr stmt) state) state))
+    
+    ;; Variable declaration
     ((and (list? stmt) (equal? (car stmt) 'var))
      (let ((var (cadr stmt))
            (val (if (= (length stmt) 2)
@@ -124,11 +132,11 @@
                     (eval-expr (caddr stmt) state))))
        (normal (cons (cons (cons var val) (car state)) (cdr state)))))
     
-    ;; Assignment: update the binding.
+    ;; Assignment
     ((and (list? stmt) (equal? (car stmt) '=))
      (normal (update state (cadr stmt) (eval-expr (caddr stmt) state))))
     
-    ;; If statement: choose the branch based on condition.
+    ;; If statement
     ((and (list? stmt) (equal? (car stmt) 'if))
      (if (eval-expr (cadr stmt) state)
          (eval-stmt (caddr stmt) state)
@@ -136,7 +144,7 @@
              (eval-stmt (cadddr stmt) state)
              (normal state))))
     
-    ;; While loop: repeatedly execute body until the condition fails.
+    ;; While loop
     ((and (list? stmt) (equal? (car stmt) 'while))
      (let loop ((current-state state))
        (if (eval-expr (cadr stmt) current-state)
@@ -146,19 +154,46 @@
                [(break? result) (normal (break-state result))]
                [(continue? result) (loop (continue-state result))]
                [(normal? result) (loop (normal-state result))]
+               [(thrown? result) result]
                [else (error "Unknown control result" result)]))
            (normal current-state))))
     
-    ;; Begin block: create a new scope.
+    ;; Begin block (scope)
     ((and (list? stmt) (equal? (car stmt) 'begin))
      (let* ((new-layer '())
             (new-state (cons new-layer state))
             (result (eval-statements (cdr stmt) new-state)))
-       ;; In a block, we discard local bindings but propagate outer state updates.
        (cond
-         [(normal? result) (normal (cdr result))]
-         [else result]))
-     )
+         [(normal? result) (normal (cdr (normal-state result)))]
+         [else result])))
+    
+    ;; Try-catch-finally statement
+    ((and (list? stmt) (equal? (car stmt) 'try))
+     (let* ((try-block (cadr stmt))
+            (catch-clause (caddr stmt))   ; expected form: (catch e <catch-block>)
+            (finally-clause (cadddr stmt)) ; expected form: (finally <finally-block>)
+            (result-try (eval-stmt try-block state))
+            (result-after-catch
+             (if (thrown? result-try)
+                 (let* ((ex (thrown-value result-try))
+                        (throw-state (thrown-state result-try))
+                        (catch-var (cadr catch-clause))
+                        (catch-body (caddr catch-clause))
+                        (catch-state (cons (list (list catch-var ex)) throw-state)))
+                   (eval-stmt catch-body catch-state))
+                 result-try))
+            (state-for-finally (cond
+                                 [(normal? result-after-catch) (normal-state result-after-catch)]
+                                 [(thrown? result-after-catch) (thrown-state result-after-catch)]
+                                 [else (error "Invalid control result in try-catch" result-after-catch)]))
+            (result-finally (eval-stmt (cadr finally-clause) state-for-finally)))
+       (cond
+         [(not (normal? result-finally))
+          result-finally]
+         [else
+          (if (normal? result-after-catch)
+              (normal (normal-state result-finally))
+              (thrown (thrown-value result-after-catch) (normal-state result-finally)))])))
     
     (else (error 'eval-stmt "Unknown statement: ~a" stmt))))
 
@@ -171,10 +206,11 @@
           [(continue? result) result]
           [(break? result) result]
           [(return? result) result]
+          [(thrown? result) result]
           [else (error "Unknown control result" result)]))))
 
 ;;---------------------------------------------------------------
-;; Main
+;; Top-Level: Normalizing Return Value
 ;;---------------------------------------------------------------
 (define (normalize-return val)
   (cond
@@ -188,11 +224,11 @@
       (cond
         [(normal? result)
          (let ((final (normal-state result)))
-           (normalize-return
-            (+ (* (lookup final 'x) 100)
-               (* (lookup final 'y) 10)
-               (lookup final 'z))))]
+           (normalize-return final))]
         [(return? result) (normalize-return (return-value result))]
+        [(thrown? result) (error "Uncaught exception:" (thrown-value result))]
         [else (error "Unexpected control flow at top level" result)]))))
 
-;; End of alternative interpreter code.
+;; End of interpreter code.
+
+
