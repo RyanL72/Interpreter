@@ -1,14 +1,18 @@
 #lang racket
-
-; Myah Potter and Ryan Lin
+;; Alternative interpreter using explicit control-flow result wrappers
 
 (require "simpleParser.rkt")
 (require "lex.rkt")
 
+;; Define result wrappers for normal execution and control flow signals
+(struct normal (state) #:transparent)
+(struct break (state) #:transparent)
+(struct continue (state) #:transparent)
+(struct return (value) #:transparent)
 
-;---------------------------------------------------------------
-; State Management (Layered)
-;---------------------------------------------------------------
+;;---------------------------------------------------------------
+;; State Management (Layered)
+;;---------------------------------------------------------------
 (define make-empty-state (lambda () '(())))
 
 (define my-assoc
@@ -36,7 +40,7 @@
   (lambda (state var val)
     (if (my-assoc var (car state))
         (error 'bind "Variable ~a already declared in this scope" var)
-        (cons (cons var val) (car state)))))
+        (cons (cons (cons var val) (car state)) (cdr state)))))
 
 (define push-binding
   (lambda (state var val)
@@ -58,10 +62,9 @@
            (append (reverse acc) (cons updated-layer (cdr layers)))))
         (else (loop (cdr layers) (cons (car layers) acc)))))))
 
-
-;---------------------------------------------------------------
-; Expression Evaluation
-;---------------------------------------------------------------
+;;---------------------------------------------------------------
+;; Expression Evaluation
+;;---------------------------------------------------------------
 (define eval-expr
   (lambda (expr state)
     (cond
@@ -97,82 +100,99 @@
         (eval-expr (caddr expr) state)))
       (else (error 'eval-expr "Unknown expression: ~a" expr)))))
 
+;;---------------------------------------------------------------
+;; Statement Evaluation using explicit result propagation
+;;---------------------------------------------------------------
+(define (eval-stmt stmt state)
+  (cond
+    ;; Return statement: immediately produce a return result.
+    ((and (list? stmt) (equal? (car stmt) 'return))
+     (return (eval-expr (cadr stmt) state)))
+    
+    ;; Continue and break just tag the state.
+    ((and (list? stmt) (equal? (car stmt) 'continue))
+     (continue state))
+    
+    ((and (list? stmt) (equal? (car stmt) 'break))
+     (break state))
+    
+    ;; Variable declaration: create a new binding.
+    ((and (list? stmt) (equal? (car stmt) 'var))
+     (let ((var (cadr stmt))
+           (val (if (= (length stmt) 2)
+                    '*unassigned*
+                    (eval-expr (caddr stmt) state))))
+       (normal (cons (cons (cons var val) (car state)) (cdr state)))))
+    
+    ;; Assignment: update the binding.
+    ((and (list? stmt) (equal? (car stmt) '=))
+     (normal (update state (cadr stmt) (eval-expr (caddr stmt) state))))
+    
+    ;; If statement: choose the branch based on condition.
+    ((and (list? stmt) (equal? (car stmt) 'if))
+     (if (eval-expr (cadr stmt) state)
+         (eval-stmt (caddr stmt) state)
+         (if (= (length stmt) 4)
+             (eval-stmt (cadddr stmt) state)
+             (normal state))))
+    
+    ;; While loop: repeatedly execute body until the condition fails.
+    ((and (list? stmt) (equal? (car stmt) 'while))
+     (let loop ((current-state state))
+       (if (eval-expr (cadr stmt) current-state)
+           (let ((result (eval-stmt (caddr stmt) current-state)))
+             (cond
+               [(return? result) result]
+               [(break? result) (normal (break-state result))]
+               [(continue? result) (loop (continue-state result))]
+               [(normal? result) (loop (normal-state result))]
+               [else (error "Unknown control result" result)]))
+           (normal current-state))))
+    
+    ;; Begin block: create a new scope.
+    ((and (list? stmt) (equal? (car stmt) 'begin))
+     (let* ((new-layer '())
+            (new-state (cons new-layer state))
+            (result (eval-statements (cdr stmt) new-state)))
+       ;; In a block, we discard local bindings but propagate outer state updates.
+       (cond
+         [(normal? result) (normal (cdr result))]
+         [else result]))
+     )
+    
+    (else (error 'eval-stmt "Unknown statement: ~a" stmt))))
 
-;---------------------------------------------------------------
-; Statement Evaluation
-;---------------------------------------------------------------
-(define eval-stmt
-  (lambda (stmt state return-cont continue-cont break-cont)
-    (cond
-      ((and (list? stmt) (equal? (car stmt) 'return))
-       (return-cont (eval-expr (cadr stmt) state)))
+(define (eval-statements stmts state)
+  (if (null? stmts)
+      (normal state)
+      (let ((result (eval-stmt (car stmts) state)))
+        (cond
+          [(normal? result) (eval-statements (cdr stmts) (normal-state result))]
+          [(continue? result) result]
+          [(break? result) result]
+          [(return? result) result]
+          [else (error "Unknown control result" result)]))))
 
-      ((and (list? stmt) (equal? (car stmt) 'continue))
-       (continue-cont state))
+;;---------------------------------------------------------------
+;; Main
+;;---------------------------------------------------------------
+(define (normalize-return val)
+  (cond
+    ((equal? val #t) 'true)
+    ((equal? val #f) 'false)
+    (else val)))
 
-      ((and (list? stmt) (equal? (car stmt) 'break))
-       (break-cont state))
+(define (interpret filename)
+  (let ((parse-tree (parser filename)))
+    (let ((result (eval-statements parse-tree (make-empty-state))))
+      (cond
+        [(normal? result)
+         (let ((final (normal-state result)))
+           (normalize-return
+            (+ (* (lookup final 'x) 100)
+               (* (lookup final 'y) 10)
+               (lookup final 'z))))]
+        [(return? result) (normalize-return (return-value result))]
+        [else (error "Unexpected control flow at top level" result)]))))
 
-      ((and (list? stmt) (equal? (car stmt) 'var))
-       (let ((var (cadr stmt))
-             (val (if (= (length stmt) 2) '*unassigned*
-                      (eval-expr (caddr stmt) state))))
-         (cons (cons (cons var val) (car state)) (cdr state))))
-
-      ((and (list? stmt) (equal? (car stmt) '=))
-       (update state (cadr stmt)
-               (eval-expr (caddr stmt) state)))
-
-      ((and (list? stmt) (equal? (car stmt) 'if))
-       (if (eval-expr (cadr stmt) state)
-           (eval-stmt (caddr stmt) state return-cont continue-cont break-cont)
-           (if (= (length stmt) 4)
-               (eval-stmt (cadddr stmt) state return-cont continue-cont break-cont)
-               state)))
-
-      ((and (list? stmt) (equal? (car stmt) 'while))
-       (call/cc
-        (lambda (break-cont-inner)
-          (define (loop current-state)
-            (if (eval-expr (cadr stmt) current-state)
-                (call/cc
-                 (lambda (continue-cont-inner)
-                   (let ((new-state (eval-stmt (caddr stmt) current-state return-cont continue-cont-inner break-cont-inner)))
-                     (loop new-state))))
-                current-state))
-          (loop state))))
-
-      ((and (list? stmt) (equal? (car stmt) 'begin))
-       (let* ((new-layer '())
-              (new-state (cons new-layer state))
-              (final-state (eval-statements (cdr stmt) new-state return-cont continue-cont break-cont)))
-         (cdr final-state)))
-
-      (else (error 'eval-stmt "Unknown statement: ~a" stmt)))))
-
-
-(define eval-statements
-  (lambda (stmts state return-cont continue-cont break-cont)
-    (if (null? stmts)
-        state
-        (let ((new-state (eval-stmt (car stmts) state return-cont continue-cont break-cont)))
-          (eval-statements (cdr stmts) new-state return-cont continue-cont break-cont)))))
-
-
-;---------------------------------------------------------------
-; Main
-;---------------------------------------------------------------
-(define normalize-return
-  (lambda (val)
-    (cond
-      ((equal? val #t) 'true)
-      ((equal? val #f) 'false)
-      (else val))))
-
-(define interpret
-  (lambda (filename)
-    (let ((parse-tree (parser filename)))
-      (call/cc
-       (lambda (return-cont)
-         (let ((initial-state (make-empty-state)))
-           (eval-statements parse-tree initial-state return-cont (lambda (s) s) (lambda (s) s)))))))
+;; End of alternative interpreter code.
