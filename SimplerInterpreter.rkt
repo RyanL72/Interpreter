@@ -33,11 +33,6 @@
 ; implement boxes
 
 
-;---------------------------------------------------------------
-; Abstractions
-;---------------------------------------------------------------
-
-
 
 ;---------------------------------------------------------------
 ; State Management
@@ -61,18 +56,17 @@
   (lambda (state var val)
     (cond
       ((eq? (my-assoc var state) #t) (error 'bind "Variable ~a already declared" var))
-      ((null? state) (cons (cons var val) state))
+      ((eq? '() state) (cons (cons var val) state))
       ((list? (car state)) (append (cons var val) (car state))))))
-      ;(else (cons (cons var val) state)))))
+      (else (cons (cons var val) state)))))
 
 (define my-assoc
   (lambda (key alist)
     (cond
       ((null? alist) #f)
       ((list? alist) alist))))
-      ;((not (pair? (car alist))) (my-assoc key (cdr alist)));((list? alist) (my-assoc key (car alist)) (my-assoc key (cdr alist)))
-      ;((equal? (car (car alist)) key) (car alist))
-      ;(else (my-assoc key (cdr alist))))))
+      ((assoc key (car alist)) (assoc key (car alist))) ;((list? alist) (my-assoc key (car alist)) (my-assoc key (cdr alist)))
+      (else (my-assoc key (cdr alist))))))
 
 (define update
   (lambda (state var val)
@@ -136,7 +130,7 @@
 ;---------------------------------------------------------------
 ; Processing: Statement Evaluation
 ;---------------------------------------------------------------
-(define eval-stmtx
+(define eval-stmt
   (lambda (stmt state)
     (cond
       ((and (list? stmt) (equal? (car stmt) 'return))
@@ -165,7 +159,7 @@
 
 
 ; Updated eval-stmt function to change states based using statement(s)
-(define eval-stmt
+(define eval-stmtx
   (lambda (stmt state return)
     (cond
       ((list? (car stmt)) (eval-stmt (car stmt) state (lambda (v1) (eval-stmt (cdr stmt) (lambda (v2) (return (cons v1 v2)))))))
@@ -210,6 +204,12 @@
                new-state
                (eval-statements (cdr stmts) new-state)))
          (eval-stmt (car stmts) state (lambda (v) v))))))
+
+;---------------------------------------------------------------
+; Abstractions
+;---------------------------------------------------------------
+
+
 
 ;---------------------------------------------------------------
 ; Main Functionality
