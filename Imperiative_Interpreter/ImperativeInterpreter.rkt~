@@ -4,6 +4,3 @@
 
 (require "simpleParser.rkt")
 
-(define return
-  (lambda (return-value)
-    (return-value)))
