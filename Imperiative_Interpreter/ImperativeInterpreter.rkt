@@ -14,6 +14,7 @@
     (let* ((program (parser filename))
          (global-env (interpret-top-level program (newenvironment)))
          (main-func (lookup 'main global-env)))
+         ; (printf "global environment : ~a" global-env) DEBUG
       (call-function main-func '() global-env))))
  
 
@@ -31,41 +32,42 @@
         (let* ((stmt (car top-level-list))
                (new-env
                 (cond
+                  
                   ((eq? (car stmt) 'var)
                    (interpret-declare stmt environment (lambda (e) e)))
                   ((eq? (car stmt) 'function)
                    (let* ((name (cadr stmt))
                           (params (caddr stmt))
                           (body (cadddr stmt))
-                          (closure (make-function-closure params body environment)))
+                          (closure (make-function-closure name params body environment)))
                      (insert name closure environment)))
+
                   (else (myerror "Invalid top-level statement:" stmt)))))
           (interpret-top-level (cdr top-level-list) new-env)))))
 
 
 (define make-function-closure
-  (lambda (params body defining-env)
-    (list 'closure params body defining-env)))
+  (lambda (name params body defining-env)
+    (list 'closure name params body defining-env)))
 
 
 (define call-function
   (lambda (closure arg-values call-env)
-    (let* ((closure-params (cadr closure))
-           (closure-body (caddr closure))
-           (closure-env (cadddr closure)))
+    ;(printf "calling ~a with ~a in ~a" closure arg-values call-env)  DEBUG
+    (let* ((closure-name (list-ref closure 1))
+           (closure-params (list-ref closure 2))
+           (closure-body (list-ref closure 3))
+           (closure-env (list-ref closure 4))
+           ;; Extend the closure's captured environment with a binding for the function itself.
+           (self-env (insert closure-name closure closure-env))
+           (func-env (extend-environment closure-params arg-values self-env)))
+      (interpret-statement-list closure-body func-env
+                                (lambda (v) v)
+                                (lambda (env) (myerror "Break used outside of loop"))
+                                (lambda (env) (myerror "Continue used outside of loop"))
+                                (lambda (v env) (myerror "Uncaught exception"))
+                                (lambda (env) (myerror "Missing return in function"))))))
 
-      ;; Build function call frame with evaluated arguments
-      (let ((func-env
-             (extend-environment closure-params arg-values closure-env)))
-
-        ;; Now interpret the function body and return its return value
-        (interpret-statement-list closure-body
-                                  func-env
-                                  (lambda (v) v)  ; return continuation
-                                  (lambda (env) (myerror "Break used outside of loop"))
-                                  (lambda (env) (myerror "Continue used outside of loop"))
-                                  (lambda (v env) (myerror "Uncaught exception"))
-                                  (lambda (env) (myerror "Missing return in function")))))))
 
 (define extend-environment
   (lambda (params args parent-env)
@@ -207,9 +209,22 @@
 (define eval-operator
   (lambda (expr environment)
     (cond
-      ((eq? '! (operator expr)) (not (eval-expression (operand1 expr) environment)))
-      ((and (eq? '- (operator expr)) (= 2 (length expr))) (- (eval-expression (operand1 expr) environment)))
-      (else (eval-binary-op2 expr (eval-expression (operand1 expr) environment) environment)))))
+      ;; Handle a function call
+      ((eq? (operator expr) 'funcall)
+       (let* ((fun (lookup (cadr expr) environment))
+              (args (map (lambda (arg)
+                           (eval-expression arg environment))
+                         (cddr expr))))
+         (call-function fun args environment)))
+      ;; Handle logical not
+      ((eq? (operator expr) '!)
+       (not (eval-expression (operand1 expr) environment)))
+      ;; Handle the unary minus case (e.g., -x)
+      ((and (eq? (operator expr) '-) (= 2 (length expr)))
+       (- (eval-expression (operand1 expr) environment)))
+      ;; For binary operators, delegate to eval-binary-op2
+      (else 
+       (eval-binary-op2 expr (eval-expression (operand1 expr) environment) environment)))))
 
 ; Complete the evaluation of the binary operator by evaluating the second operand and performing the operation.
 (define eval-binary-op2
