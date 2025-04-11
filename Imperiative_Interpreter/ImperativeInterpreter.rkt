@@ -53,16 +53,19 @@
     (let* ((closure-name (list-ref closure 1))
            (closure-params (list-ref closure 2))
            (closure-body (list-ref closure 3))
-           (closure-env (list-ref closure 4))
-           ;; Extend the closure's captured environment with a binding for the function itself.
-           (self-env (insert closure-name closure closure-env))
-           (func-env (extend-environment closure-params arg-values self-env)))
-      (interpret-statement-list closure-body func-env
-                                (lambda (v) v)
-                                (lambda (env) (myerror "Break used outside of loop"))
-                                (lambda (env) (myerror "Continue used outside of loop"))
-                                (lambda (v env) (myerror "Uncaught exception"))
-                                (lambda (env) 'novalue)))))  ; <-- returns 'novalue if no return is encountered
+           (closure-env (list-ref closure 4)))
+      ;; Check that the number of arguments matches the number of parameters.
+      (if (not (= (length closure-params) (length arg-values)))
+          (myerror "wrong number of parameters: expected" (length closure-params)
+                   "but received" (length arg-values))
+          (let* ((self-env (insert closure-name closure closure-env))
+                 (func-env (extend-environment closure-params arg-values self-env)))
+            (interpret-statement-list closure-body func-env
+                                      (lambda (v) v)
+                                      (lambda (env) (myerror "Break used outside of loop"))
+                                      (lambda (env) (myerror "Continue used outside of loop"))
+                                      (lambda (v env) (myerror "Uncaught exception"))
+                                      (lambda (env) 'novalue)))))))
 
 (define extend-environment
   (lambda (params args parent-env)
@@ -405,12 +408,13 @@
 (define error-break (lambda (v) v))
 (call-with-current-continuation (lambda (k) (set! error-break k)))
 
+; Updated myerror function: converts every argument to a string regardless of its type.
 (define myerror
   (lambda (str . vals)
-    (letrec ((makestr (lambda (str vals)
+    (letrec ((makestr (lambda (acc vals)
                         (if (null? vals)
-                            str
-                            (makestr (string-append str " " (symbol->string (car vals))) (cdr vals))))))
+                            acc
+                            (makestr (string-append acc " " (format "~a" (car vals))) (cdr vals))))))
       (error-break (display (string-append str (makestr "" vals)))))))
 
 ; Functions to convert the Scheme #t and #f to our language's true and false, and back.
@@ -427,7 +431,6 @@
       ((eq? v #f) 'false)
       ((eq? v #t) 'true)
       (else v))))
-
 
 
 
