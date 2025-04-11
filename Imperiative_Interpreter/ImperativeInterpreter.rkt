@@ -42,13 +42,44 @@
                   (else (myerror "Invalid top-level statement:" stmt)))))
           (interpret-top-level (cdr top-level-list) new-env)))))
 
+
 (define make-function-closure
   (lambda (params body defining-env)
     (list 'closure params body defining-env)))
 
+
 (define call-function
-  (lambda (closure args call-env)
-    (myerror "call-function not implemented yet")))
+  (lambda (closure arg-values call-env)
+    (let* ((closure-params (cadr closure))
+           (closure-body (caddr closure))
+           (closure-env (cadddr closure)))
+
+      ;; Build function call frame with evaluated arguments
+      (let ((func-env
+             (extend-environment closure-params arg-values closure-env)))
+
+        ;; Now interpret the function body and return its return value
+        (interpret-statement-list closure-body
+                                  func-env
+                                  (lambda (v) v)  ; return continuation
+                                  (lambda (env) (myerror "Break used outside of loop"))
+                                  (lambda (env) (myerror "Continue used outside of loop"))
+                                  (lambda (v env) (myerror "Uncaught exception"))
+                                  (lambda (env) (myerror "Missing return in function")))))))
+
+(define extend-environment
+  (lambda (params args parent-env)
+    (let ((new-env (push-frame parent-env)))
+      (extend-env-helper params args new-env))))
+
+(define extend-env-helper
+  (lambda (params args env)
+    (if (null? params)
+        env
+        (extend-env-helper (cdr params)
+                           (cdr args)
+                           (insert (car params) (car args) env)))))
+
 
 
 ; interpret a statement in the environment with continuations for return, break, continue, throw, and "next statement"
