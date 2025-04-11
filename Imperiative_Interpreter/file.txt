@@ -1,12 +1,11 @@
-function fib(a) {
-  if (a == 0)
-    return 0;
-  else if (a == 1)
-    return 1;
-  else 
-    return fib(a-1) + fib(a-2);
-}
+var x = 1;
+var y = 10;
+var r = 0;
 
 function main() {
-  return fib(10);
+  while (x < y) {
+     r = r + x;
+     x = x + 1;
+  }
+  return r;
 }
