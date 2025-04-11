@@ -1,1 +1,0 @@
-("8.15" ta6nt ("f87a847d51bd3656560280ecf9fe22c10b441429" . "67d5293280a17a065c2d0dc9cf01e2149f243b9d") #"C:\\Users\\Ryan\\CSDS_345\\Project_1_Interpreter\\lex.rkt" (collects #"drracket" #"private" #"drracket-errortrace-key.rkt") (collects #"racket" #"main.rkt") (collects #"racket" #"runtime-config.rkt"))
