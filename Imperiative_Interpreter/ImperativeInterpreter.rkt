@@ -1,4 +1,9 @@
+;; Imperative Interpreter
+
+;; Myah Potter Ryan Lin
+
 #lang racket
+
 (require "functionParser.rkt")
 ; (load "functionParser.scm")
 
