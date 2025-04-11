@@ -1,4 +1,4 @@
-#lang racket
+ #lang racket
 (require "functionParser.rkt")
 ; (load "functionParser.scm")
 
@@ -87,6 +87,12 @@
        (interpret-return statement environment return))
       ((eq? 'var (statement-type statement))
        (interpret-declare statement environment next))
+      ((eq? 'function (statement-type statement))    ; <- New branch to handle inner function definitions
+       (let* ((name (cadr statement))
+              (params (caddr statement))
+              (body (cadddr statement))
+              (closure (make-function-closure name params body environment)))
+         (next (insert name closure environment))))
       ((eq? '= (statement-type statement))
        (interpret-assign statement environment next))
       ((eq? 'if (statement-type statement))
