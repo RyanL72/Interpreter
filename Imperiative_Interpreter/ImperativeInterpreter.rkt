@@ -32,7 +32,6 @@
         (let* ((stmt (car top-level-list))
                (new-env
                 (cond
-                 
                  ((eq? (car stmt) 'var)
                   (interpret-declare stmt environment (lambda (e) e)))
                  ((eq? (car stmt) 'function)
@@ -41,7 +40,6 @@
                          (body (cadddr stmt))
                          (closure (make-function-closure name params body environment)))
                     (insert name closure environment)))
-                 
                  (else (myerror "Invalid top-level statement:" stmt)))))
           (interpret-top-level (cdr top-level-list) new-env)))))
 
@@ -51,7 +49,7 @@
 
 (define call-function
   (lambda (closure arg-values call-env)
-    ; (printf "calling ~a with ~a in ~a" closure arg-values call-env)  ; DEBUG
+    ; (printf "calling ~a with ~a in ~a" closure arg-values call-env) ; DEBUG
     (let* ((closure-name (list-ref closure 1))
            (closure-params (list-ref closure 2))
            (closure-body (list-ref closure 3))
@@ -64,7 +62,7 @@
                                 (lambda (env) (myerror "Break used outside of loop"))
                                 (lambda (env) (myerror "Continue used outside of loop"))
                                 (lambda (v env) (myerror "Uncaught exception"))
-                                (lambda (env) (myerror "Missing return in function"))))))
+                                (lambda (env) 'novalue)))))  ; <-- returns 'novalue if no return is encountered
 
 (define extend-environment
   (lambda (params args parent-env)
@@ -107,7 +105,7 @@
        (next environment))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
-; Calls the return continuation with the given expression value
+; Calls the return continuation with the given expression value.
 (define interpret-return
   (lambda (statement environment return)
     (return (eval-expression (get-expr statement) environment))))
@@ -128,7 +126,7 @@
                   (eval-expression (get-assign-rhs statement) environment)
                   environment))))
 
-; We need to check if there is an else condition.  Otherwise, we evaluate the expression and do the right thing.
+; Check if there is an else condition; if not, evaluate the condition and do the right thing.
 (define interpret-if
   (lambda (statement environment return break continue throw next)
     (cond
@@ -163,15 +161,14 @@
                               (lambda (v env) (throw v (pop-frame env)))
                               (lambda (env) (next (pop-frame env))))))
 
-; We use a continuation to throw the proper value.  Because we are not using boxes, the environment/state must be thrown as well so any environment changes will be kept.
+; Uses a continuation to throw the proper value.  Because we are not using boxes, the environment/state must be thrown as well so any changes are preserved.
 (define interpret-throw
   (lambda (statement environment throw)
     (throw (eval-expression (get-expr statement) environment) environment)))
 
 ; Interpret a try-catch-finally block.
-; Create a continuation for the throw.  If there is no catch, it has to interpret the finally block,
-; and once that completes throw the exception.
-; Otherwise, it interprets the catch block with the exception bound to the thrown value and interprets the finally block when the catch is done.
+; Create a continuation for the throw.  If there is no catch, interpret the finally block and then throw the exception.
+; Otherwise, run the catch block with the exception bound and then execute the finally block.
 (define create-throw-catch-continuation
   (lambda (catch-statement environment return break continue throw next finally-block)
     (cond
@@ -192,8 +189,7 @@
           (lambda (v env2) (throw v (pop-frame env2)))
           (lambda (env2) (interpret-block finally-block (pop-frame env2) return break continue throw next))))))))
 
-; To interpret a try block, we must adjust the return, break, continue continuations to interpret the finally block if any of them are used.
-; We must create a new throw continuation and then interpret the try block with the new continuations followed by the finally block with the old continuations.
+; To interpret a try block, adjust the return, break, continue continuations to invoke the finally block if needed.
 (define interpret-try
   (lambda (statement environment return break continue throw next)
     (let* ((finally-block (make-finally-block (get-finally statement)))
@@ -211,7 +207,7 @@
       (interpret-block try-block environment new-return new-break new-continue new-throw
                        (lambda (env) (interpret-block finally-block env return break continue throw next))))))
 
-; helper methods so that I can reuse the interpret-block method on the try and finally blocks.
+; helper methods to reuse the interpret-block method on try and finally blocks.
 (define make-try-block
   (lambda (try-statement)
     (cons 'begin try-statement)))
@@ -234,9 +230,8 @@
       ((not (list? expr)) (lookup expr environment))
       (else (eval-operator expr environment)))))
 
-; Evaluate a binary (or unary) operator. Although this is not dealing with side effects, the routine evaluates the left operand first
-; and then passes the result to eval-binary-op2 to evaluate the right operand. This forces the operands to be evaluated in the proper order
-; in case you choose to add side effects to the interpreter.
+; Evaluate a binary (or unary) operator. Evaluates the left operand first then delegates to eval-binary-op2 for the right operand,
+; ensuring the proper order in case side effects are added.
 (define eval-operator
   (lambda (expr environment)
     (cond
@@ -250,10 +245,10 @@
       ;; Handle logical not.
       ((eq? (operator expr) '!)
        (not (eval-expression (operand1 expr) environment)))
-      ;; Handle the unary minus case (e.g., -x).
+      ;; Handle unary minus (e.g., -x).
       ((and (eq? (operator expr) '-) (= 2 (length expr)))
        (- (eval-expression (operand1 expr) environment)))
-      ;; For binary operators, delegate to eval-binary-op2.
+      ;; Otherwise delegate to binary operator evaluation.
       (else (eval-binary-op2 expr (eval-expression (operand1 expr) environment) environment)))))
 
 ; Complete the evaluation of the binary operator by evaluating the second operand and performing the operation.
@@ -275,7 +270,7 @@
       ((eq? '&& (operator expr)) (and op1value (eval-expression (operand2 expr) environment)))
       (else (myerror "Unknown operator:" (operator expr))))))
 
-; Determines if two values are equal. We need a special test because there are both boolean and integer types.
+; Determines if two values are equal. Special test for numbers versus booleans.
 (define isequal
   (lambda (val1 val2)
     (if (and (number? val1) (number? val2))
@@ -300,7 +295,7 @@
   (lambda (statement)
     (not (null? (cdddr statement)))))
 
-; these helper functions define the parts of the various statement types.
+; Helper functions defining the parts of various statement types.
 (define statement-type operator)
 (define get-expr operand1)
 (define get-declare-var operand1)
@@ -326,28 +321,27 @@
 ;------------------------
 
 ; With the mutable approach, a frame is implemented as a hash table mapping variable names to values.
-
-; create an empty frame.
+; Create an empty frame.
 (define newframe
   (lambda ()
-    (make-hash)))  
+    (make-hash)))
 
-; create a new empty environment.
+; Create a new empty environment.
 (define newenvironment
   (lambda ()
     (list (newframe))))
 
-; add a frame onto the top of the environment.
+; Add a frame onto the top of the environment.
 (define push-frame
   (lambda (environment)
     (cons (newframe) environment)))
 
-; remove a frame from the environment.
+; Remove a frame from the environment.
 (define pop-frame
   (lambda (environment)
     (cdr environment)))
 
-; does a variable exist in the environment?
+; Test if a variable exists in the environment.
 (define exists?
   (lambda (var environment)
     (cond
@@ -355,12 +349,12 @@
       ((hash-has-key? (car environment) var) #t)
       (else (exists? var (cdr environment))))))
 
-; Looks up a value in the environment.  If the value is a boolean, it converts our language's boolean type to a Scheme boolean type.
+; Look up a value in the environment. Converts booleans to the language format.
 (define lookup
   (lambda (var environment)
     (lookup-variable var environment)))
 
-; A helper function that does the lookup.  Returns an error if the variable does not have a legal value.
+; Helper function for lookup. Errors if variable is unassigned.
 (define lookup-variable
   (lambda (var environment)
     (let ((value (lookup-in-env var environment)))
@@ -385,14 +379,14 @@
       (else (hash-ref frame var)))))
 
 ; Adds a new variable/value binding pair into the environment.
-; Now, if the variable is already defined in the current frame, we simply update it rather than error.
+; If the variable is already defined in the current frame, it is updated.
 (define insert
   (lambda (var val environment)
     (hash-set! (car environment) var val)
     environment))
 
 ; Changes the binding of a variable to a new value in the environment.
-; Gives an error if the variable does not exist.
+; Errors if the variable does not exist.
 (define update
   (lambda (var val environment)
     (if (exists? var environment)
@@ -416,7 +410,7 @@
     (letrec ((makestr (lambda (str vals)
                         (if (null? vals)
                             str
-                            (makestr (string-append str (string-append " " (symbol->string (car vals)))) (cdr vals))))))
+                            (makestr (string-append str " " (symbol->string (car vals))) (cdr vals))))))
       (error-break (display (string-append str (makestr "" vals)))))))
 
 ; Functions to convert the Scheme #t and #f to our language's true and false, and back.
