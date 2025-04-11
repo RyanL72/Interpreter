@@ -64,7 +64,7 @@
                                       (lambda (v) v)
                                       (lambda (env) (myerror "Break used outside of loop"))
                                       (lambda (env) (myerror "Continue used outside of loop"))
-                                      (lambda (v env) v) ; Revised throw continuation: simply return the exception value
+                                      (lambda (v env) (myerror "Uncaught exception"))
                                       (lambda (env) 'novalue)))))))
 
 (define extend-environment
@@ -186,24 +186,28 @@
 ; 
 (define create-throw-catch-continuation
   (lambda (catch-statement environment return break continue throw next finally-block)
-    (if (null? catch-statement)
-        (lambda (ex env)
-          (interpret-block finally-block env return break continue throw
-                           (lambda (env2) (throw ex env2))))
-        (lambda (ex env)
-          (let* ((new-env (push-frame env))
-                 (catch-env (insert (catch-var catch-statement) ex new-env)))
-            (interpret-statement-list
-             (get-body catch-statement)
-             catch-env
-             return
-             (lambda (env2) (break (pop-frame env2)))
-             (lambda (env2) (continue (pop-frame env2)))
-             (lambda (v env2) (throw v (pop-frame env2)))
-             (lambda (env2)
-               ;; Once the catch body finishes, execute the finally block.
-               (interpret-block finally-block (pop-frame env2) return break continue throw next))))))))
-
+    (cond
+      ((null? catch-statement)
+       (lambda (ex env)
+         (interpret-block finally-block env return break continue throw
+                          (lambda (env2) (throw ex env2)))))
+      ((not (eq? 'catch (statement-type catch-statement)))
+       (myerror "Incorrect catch statement"))
+      (else
+       (lambda (ex env)
+         (let ((catch-result
+                (interpret-statement-list
+                 (get-body catch-statement)
+                 (insert (catch-var catch-statement) ex (push-frame env))
+                 return
+                 (lambda (env2) (break (pop-frame env2)))
+                 (lambda (env2) (continue (pop-frame env2)))
+                 (lambda (v env2) (throw v (pop-frame env2)))
+                 (lambda (env2) 
+                   ; After the catch body finishes, execute the finally block and then return catch-result.
+                   (interpret-block finally-block (pop-frame env2) return break continue throw next)))))
+           catch-result))))))
+           
 (define interpret-try
   (lambda (statement environment return break continue throw next)
     (let* ((finally-block (make-finally-block (get-finally statement)))
