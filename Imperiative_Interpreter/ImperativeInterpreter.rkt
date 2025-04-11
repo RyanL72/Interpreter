@@ -15,7 +15,7 @@
          (global-env (interpret-top-level program (newenvironment)))
          (main-func (lookup 'main global-env)))
          ; (printf "global environment : ~a" global-env) DEBUG
-      (call-function main-func '() global-env))))
+      (scheme->language(call-function main-func '() global-env)))))
  
 
 ; interprets a list of statements.  The state/environment from each statement is used for the next ones.
@@ -98,6 +98,8 @@
       ((eq? 'begin (statement-type statement)) (interpret-block statement environment return break continue throw next))
       ((eq? 'throw (statement-type statement)) (interpret-throw statement environment throw))
       ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw next))
+      ((eq? 'funcall (statement-type statement))(eval-expression statement environment)(next environment))
+
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
 ; Calls the return continuation with the given expression value
