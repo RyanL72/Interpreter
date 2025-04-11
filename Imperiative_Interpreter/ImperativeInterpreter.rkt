@@ -23,6 +23,36 @@
         (next environment)
         (interpret-statement (car statement-list) environment return break continue throw (lambda (env) (interpret-statement-list (cdr statement-list) env return break continue throw next))))))
 
+<<<<<<< HEAD
+=======
+(define interpret-top-level
+  (lambda (top-level-list environment)
+    (if (null? top-level-list)
+        environment
+        (let* ((stmt (car top-level-list))
+               (new-env
+                (cond
+                  ((eq? (car stmt) 'var)
+                   (interpret-declare stmt environment (lambda (e) e)))
+                  ((eq? (car stmt) 'function)
+                   (let* ((name (cadr stmt))
+                          (params (caddr stmt))
+                          (body (cadddr stmt))
+                          (closure (make-function-closure params body environment)))
+                     (insert name closure environment)))
+                  (else (myerror "Invalid top-level statement:" stmt)))))
+          (interpret-top-level (cdr top-level-list) new-env)))))
+
+(define make-function-closure
+  (lambda (params body defining-env)
+    (list 'closure params body defining-env)))
+
+(define call-function
+  (lambda (closure args call-env)
+    (myerror "call-function not implemented yet")))
+
+
+>>>>>>> parent of 4bb69bb (Works for test 1)
 ; interpret a statement in the environment with continuations for return, break, continue, throw, and "next statement"
 (define interpret-statement
   (lambda (statement environment return break continue throw next)
