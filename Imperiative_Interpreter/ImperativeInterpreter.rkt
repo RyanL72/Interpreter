@@ -1,21 +1,20 @@
 ; If you are using scheme instead of racket, comment these two lines, uncomment the (load "simpleParser.scm") and comment the (require "simpleParser.rkt")
 #lang racket
-(require "functionParser.rkt")
-; (load "functionParser.scm")
+(require "simpleParser.rkt")
+; (load "simpleParser.scm")
 
 ; An interpreter for the simple language using tail recursion for the M_state functions and does not handle side effects.
 
 ; The functions that start interpret-...  all return the current environment.  These are the M_state functions.
 ; The functions that start eval-...  all return a value.  These are the M_value and M_boolean functions.
 
-; The main function. 
+; The main function.  Calls parser to get the parse tree and interprets it with a new environment.  Sets default continuations for return, break, continue, throw, and "next statement"
 (define interpret
-  (lambda (filename)
-    (let* ((program (parser filename))
-         (global-env (interpret-top-level program (newenvironment)))
-         (main-func (lookup 'main global-env)))
-      (call-function main-func '() global-env)))) ; the '() means no arguments
- 
+  (lambda (file)
+    (scheme->language
+     (interpret-statement-list (parser file) (newenvironment) (lambda (v) v)
+                               (lambda (env) (myerror "Break used outside of loop")) (lambda (env) (myerror "Continue used outside of loop"))
+                               (lambda (v env) (myerror "Uncaught exception thrown")) (lambda (env) env)))))
 
 ; interprets a list of statements.  The state/environment from each statement is used for the next ones.
 (define interpret-statement-list
@@ -23,64 +22,6 @@
     (if (null? statement-list)
         (next environment)
         (interpret-statement (car statement-list) environment return break continue throw (lambda (env) (interpret-statement-list (cdr statement-list) env return break continue throw next))))))
-
-(define interpret-top-level
-  (lambda (top-level-list environment)
-    (if (null? top-level-list)
-        environment
-        (let* ((stmt (car top-level-list))
-               (new-env
-                (cond
-                  ((eq? (car stmt) 'var)
-                   (interpret-declare stmt environment (lambda (e) e)))
-                  ((eq? (car stmt) 'function)
-                   (let* ((name (cadr stmt))
-                          (params (caddr stmt))
-                          (body (cadddr stmt))
-                          (closure (make-function-closure params body environment)))
-                     (insert name closure environment)))
-                  (else (myerror "Invalid top-level statement:" stmt)))))
-          (interpret-top-level (cdr top-level-list) new-env)))))
-
-
-(define make-function-closure
-  (lambda (params body defining-env)
-    (list 'closure params body defining-env)))
-
-
-(define call-function
-  (lambda (closure arg-values call-env)
-    (let* ((closure-params (cadr closure))
-           (closure-body (caddr closure))
-           (closure-env (cadddr closure)))
-
-      ;; Build function call frame with evaluated arguments
-      (let ((func-env
-             (extend-environment closure-params arg-values closure-env)))
-
-        ;; Now interpret the function body and return its return value
-        (interpret-statement-list closure-body
-                                  func-env
-                                  (lambda (v) v)  ; return continuation
-                                  (lambda (env) (myerror "Break used outside of loop"))
-                                  (lambda (env) (myerror "Continue used outside of loop"))
-                                  (lambda (v env) (myerror "Uncaught exception"))
-                                  (lambda (env) (myerror "Missing return in function")))))))
-
-(define extend-environment
-  (lambda (params args parent-env)
-    (let ((new-env (push-frame parent-env)))
-      (extend-env-helper params args new-env))))
-
-(define extend-env-helper
-  (lambda (params args env)
-    (if (null? params)
-        env
-        (extend-env-helper (cdr params)
-                           (cdr args)
-                           (insert (car params) (car args) env)))))
-
-
 
 ; interpret a statement in the environment with continuations for return, break, continue, throw, and "next statement"
 (define interpret-statement
