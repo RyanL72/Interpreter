@@ -1,0 +1,1 @@
+("8.16" tarm64osx ("53e8af6a2d780027ab5b930f41e968818b9ce524" . "20eb2071fe369b2acca68400980eeb843d5e5e55") #"/Users/ryan/Documents/GitHub/Interpreter/Imperiative_Interpreter/lex.rkt" (collects #"drracket" #"private" #"drracket-errortrace-key.rkt") (collects #"racket" #"main.rkt") (collects #"racket" #"runtime-config.rkt"))
