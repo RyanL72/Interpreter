@@ -1,4 +1,4 @@
- #lang racket
+#lang racket
 (require "functionParser.rkt")
 ; (load "functionParser.scm")
 
@@ -32,15 +32,15 @@
         (let* ((stmt (car top-level-list))
                (new-env
                 (cond
-                 ((eq? (car stmt) 'var)
-                  (interpret-declare stmt environment (lambda (e) e)))
-                 ((eq? (car stmt) 'function)
-                  (let* ((name (cadr stmt))
-                         (params (caddr stmt))
-                         (body (cadddr stmt))
-                         (closure (make-function-closure name params body environment)))
-                    (insert name closure environment)))
-                 (else (myerror "Invalid top-level statement:" stmt)))))
+                  ((eq? (car stmt) 'var)
+                   (interpret-declare stmt environment (lambda (e) e)))
+                  ((eq? (car stmt) 'function)
+                   (let* ((name (cadr stmt))
+                          (params (caddr stmt))
+                          (body (cadddr stmt))
+                          (closure (make-function-closure name params body environment)))
+                     (insert name closure environment)))
+                  (else (myerror "Invalid top-level statement:" stmt)))))
           (interpret-top-level (cdr top-level-list) new-env)))))
 
 (define make-function-closure
@@ -87,7 +87,7 @@
        (interpret-return statement environment return))
       ((eq? 'var (statement-type statement))
        (interpret-declare statement environment next))
-      ((eq? 'function (statement-type statement))    ; <- New branch to handle inner function definitions
+      ((eq? 'function (statement-type statement))    ; <-- Handle inner function definitions
        (let* ((name (cadr statement))
               (params (caddr statement))
               (body (cadddr statement))
@@ -175,9 +175,15 @@
   (lambda (statement environment throw)
     (throw (eval-expression (get-expr statement) environment) environment)))
 
-; Interpret a try-catch-finally block.
-; Create a continuation for the throw.  If there is no catch, interpret the finally block and then throw the exception.
-; Otherwise, run the catch block with the exception bound and then execute the finally block.
+; ;;---------------------------------------------------------------
+; Try-Catch-Finally support
+; 
+; In a try statement our language expects the structure:
+;   (try <try-block> (<catch> (<var>) <catch-body>) (<finally> <finally-body>))
+;
+; interpret-try sets up new continuations for return, break, continue, and throw.
+; The new throw continuation is produced by create-throw-catch-continuation.
+; 
 (define create-throw-catch-continuation
   (lambda (catch-statement environment return break continue throw next finally-block)
     (cond
@@ -189,16 +195,19 @@
        (myerror "Incorrect catch statement"))
       (else
        (lambda (ex env)
-         (interpret-statement-list
-          (get-body catch-statement)
-          (insert (catch-var catch-statement) ex (push-frame env))
-          return
-          (lambda (env2) (break (pop-frame env2)))
-          (lambda (env2) (continue (pop-frame env2)))
-          (lambda (v env2) (throw v (pop-frame env2)))
-          (lambda (env2) (interpret-block finally-block (pop-frame env2) return break continue throw next))))))))
-
-; To interpret a try block, adjust the return, break, continue continuations to invoke the finally block if needed.
+         (let ((catch-result
+                (interpret-statement-list
+                 (get-body catch-statement)
+                 (insert (catch-var catch-statement) ex (push-frame env))
+                 return
+                 (lambda (env2) (break (pop-frame env2)))
+                 (lambda (env2) (continue (pop-frame env2)))
+                 (lambda (v env2) (throw v (pop-frame env2)))
+                 (lambda (env2) 
+                   ; After the catch body finishes, execute the finally block and then return catch-result.
+                   (interpret-block finally-block (pop-frame env2) return break continue throw next)))))
+           catch-result))))))
+           
 (define interpret-try
   (lambda (statement environment return break continue throw next)
     (let* ((finally-block (make-finally-block (get-finally statement)))
@@ -229,6 +238,9 @@
        (myerror "Incorrectly formatted finally block"))
       (else (cons 'begin (cadr finally-statement))))))
 
+; ;;---------------------------------------------------------------
+; Expression Evaluation
+; 
 ; Evaluates all possible boolean and arithmetic expressions, including constants and variables.
 (define eval-expression
   (lambda (expr environment)
@@ -286,10 +298,9 @@
         (= val1 val2)
         (eq? val1 val2))))
 
-;-----------------
-; HELPER FUNCTIONS
-;-----------------
-
+; ;;---------------------------------------------------------------
+; Helper Functions for Expression Parsing
+; 
 ; These helper functions define the operator and operands of a value expression.
 (define operator car)
 (define operand1 cadr)
@@ -325,10 +336,9 @@
   (lambda (catch-statement)
     (car (operand1 catch-statement))))
 
-;------------------------
+; ;;---------------------------------------------------------------
 ; Environment/State Functions
-;------------------------
-
+; 
 ; With the mutable approach, a frame is implemented as a hash table mapping variable names to values.
 ; Create an empty frame.
 (define newframe
@@ -437,6 +447,5 @@
       ((eq? v #f) 'false)
       ((eq? v #t) 'true)
       (else v))))
-
 
 
