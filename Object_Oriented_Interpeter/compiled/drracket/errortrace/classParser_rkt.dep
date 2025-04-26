@@ -1,0 +1,1 @@
+("8.16" tarm64osx ("3cddcf54e25a0faf6659fcd60e15c7a8b4054c26" . "572a35682a022ec92e4cda4219bad131d0773034") #"/Users/ryan/Documents/GitHub/Interpreter/Object_Oriented_Interpeter/lex.rkt" (collects #"drracket" #"private" #"drracket-errortrace-key.rkt") (collects #"racket" #"main.rkt") (collects #"racket" #"runtime-config.rkt"))
