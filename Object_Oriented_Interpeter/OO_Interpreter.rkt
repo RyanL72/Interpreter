@@ -4,7 +4,7 @@
 
 #lang racket
 
-(require "objectParser.rkt")
+(require "classParser.rkt")
 ; (load "functionParser.scm")
 
 ; An interpreter for the simple language using tail recursion for the M_state functions and does not handle side effects.
