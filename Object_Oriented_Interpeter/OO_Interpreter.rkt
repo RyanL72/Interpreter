@@ -128,10 +128,10 @@
   (lambda (method-closure this-instance args call-env)
     (let* ((method-name   (list-ref method-closure 1))
            (method-params (list-ref method-closure 2))
-           (method-body   (list-ref method-closure 3))
-           (method-env    (list-ref method-closure 4)))
-      ;; extend environment by binding 'this' + params
-      (let* ((self-env (insert 'this this-instance method-env))
+           (method-body   (list-ref method-closure 3)))
+      ;; Forget old method-env
+      (let* ((base-env (push-frame (newenvironment)))   ; fresh env
+             (self-env (insert 'this this-instance base-env))
              (func-env (extend-environment method-params args self-env)))
         (interpret-statement-list method-body func-env
                                   (lambda (v) v)
@@ -139,6 +139,7 @@
                                   (lambda (env) (myerror "Continue outside loop"))
                                   (lambda (v env) v)
                                   (lambda (env) 'novalue))))))
+
 
 
 (define call-function
