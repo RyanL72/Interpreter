@@ -12,14 +12,33 @@
 ; The functions that start interpret-...  all return the current environment.  These are the M_state functions.
 ; The functions that start eval-...  all return a value.  These are the M_value and M_boolean functions.
 
-; The main function. 
+
+;;— The real interpret, no debug prints ——
 (define interpret
-  (lambda (filename)
+  (lambda (filename classname)
+    (let* ((program     (parser filename))
+           (global-env  (interpret-top-level program (newenvironment)))
+           ;; find the class‐closure
+           (class-closure (lookup classname global-env))
+           ;; methods are at index 4 of the closure list:
+           (methods      (list-ref class-closure 4))
+           ;; grab 'main
+           (main-func    (hash-ref methods 'main)))
+      ;; call main with no args, then convert #t/#f back to your language
+      (scheme->language
+       (call-function main-func '() global-env)))))
+
+
+;debug interpret
+(define interpret-debug
+  (lambda (filename classname)
     (let* ((program (parser filename))
-           (global-env (interpret-top-level program (newenvironment)))
-           (main-func (lookup 'main global-env)))
-      ; (printf "global environment : ~a" global-env) ; DEBUG
-      (scheme->language (call-function main-func '() global-env)))))
+           (global-env (interpret-top-level program (newenvironment))))
+      (printf "Parsed Program: ~a\n" program)
+      (printf "Class Name: ~a\n" classname)
+      (printf "Global Environment: ~a\n" global-env)
+      'debug-done)))
+
 
 ; interprets a list of statements.  The state/environment from each statement is used for the next ones.
 (define interpret-statement-list
@@ -30,6 +49,31 @@
                              (lambda (env)
                                (interpret-statement-list (cdr statement-list) env return break continue throw next))))))
 
+;;— process-members now takes the environment in which methods should close over ——
+(define process-members
+  (lambda (members defining-env)
+    (let ((fields  (make-hash))
+          (methods (make-hash)))
+      (for-each
+       (lambda (m)
+         (cond
+           ;; instance field
+           ((eq? (car m) 'var)
+            (let ((name  (cadr m))
+                  (value (caddr m)))
+              (hash-set! fields name value)))
+           ;; static method
+           ((eq? (car m) 'static-function)
+            (let ((name   (cadr m))
+                  (params (caddr m))
+                  (body   (cadddr m)))
+              ;; now close over the real defining-env, not 'dummy-env
+              (hash-set! methods name
+                         (make-function-closure name params body defining-env)))))
+       members)
+      (list fields methods))))
+
+;;— Updated interpret-top-level to pass its environment into process-members ——
 (define interpret-top-level
   (lambda (top-level-list environment)
     (if (null? top-level-list)
@@ -39,14 +83,38 @@
                 (cond
                   ((eq? (car stmt) 'var)
                    (interpret-declare stmt environment (lambda (e) e)))
+
                   ((eq? (car stmt) 'function)
-                   (let* ((name (cadr stmt))
-                          (params (caddr stmt))
-                          (body (cadddr stmt))
+                   (let* ((name    (cadr stmt))
+                          (params  (caddr stmt))
+                          (body    (cadddr stmt))
                           (closure (make-function-closure name params body environment)))
                      (insert name closure environment)))
-                  (else (myerror "Invalid top-level statement:" stmt)))))
+
+                  ((eq? (car stmt) 'class)
+                   (let* ((class-name (cadr stmt))
+                          (parent     (caddr stmt))
+                          (members    (cadddr stmt))
+                          ;; pass the *same* environment so closures close properly
+                          (fields-methods (process-members members environment))
+                          (fields  (car  fields-methods))
+                          (methods (cadr fields-methods))
+                          (class-closure
+                            (list 'class-closure
+                                  class-name
+                                  parent
+                                  fields
+                                  methods)))
+                     (insert class-name class-closure environment)))
+
+                  (else
+                   (myerror "Invalid top-level statement:" stmt)))))
           (interpret-top-level (cdr top-level-list) new-env)))))
+
+
+
+
+
 
 (define make-function-closure
   (lambda (name params body defining-env)
