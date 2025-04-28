@@ -76,28 +76,37 @@
           (interpret-top-level (cdr top-level-list) new-env)))))
 
 
-
-
 (define process-members
   (lambda (members defining-env)
-    (let ((fields  (make-hash))
+    (let ((fields (make-hash))
           (methods (make-hash)))
       (for-each
        (lambda (m)
          (cond
+           ;; instance field
            ((eq? (car m) 'var)
             (let ((name  (cadr m))
                   (value (caddr m)))
               (hash-set! fields name value)))
+
+           ;; static method
            ((eq? (car m) 'static-function)
             (let ((name   (cadr m))
                   (params (caddr m))
                   (body   (cadddr m)))
-              ;; close over the real defining-env instead of 'dummy-env
+              (hash-set! methods name
+                         (make-function-closure name params body defining-env))))
+
+           ;; instance method — NEW!
+           ((eq? (car m) 'function)
+            (let ((name   (cadr m))
+                  (params (caddr m))
+                  (body   (cadddr m)))
               (hash-set! methods name
                          (make-function-closure name params body defining-env))))))
        members)
       (list fields methods))))
+
 
 (define make-instance-closure
   (lambda (class-closure)
@@ -114,6 +123,23 @@
 (define make-function-closure
   (lambda (name params body defining-env)
     (list 'closure name params body defining-env)))
+
+(define call-method
+  (lambda (method-closure this-instance args call-env)
+    (let* ((method-name   (list-ref method-closure 1))
+           (method-params (list-ref method-closure 2))
+           (method-body   (list-ref method-closure 3))
+           (method-env    (list-ref method-closure 4)))
+      ;; extend environment by binding 'this' + params
+      (let* ((self-env (insert 'this this-instance method-env))
+             (func-env (extend-environment method-params args self-env)))
+        (interpret-statement-list method-body func-env
+                                  (lambda (v) v)
+                                  (lambda (env) (myerror "Break outside loop"))
+                                  (lambda (env) (myerror "Continue outside loop"))
+                                  (lambda (v env) v)
+                                  (lambda (env) 'novalue))))))
+
 
 (define call-function
   (lambda (closure arg-values call-env)
@@ -320,39 +346,65 @@
 (define eval-operator
   (lambda (expr environment)
     (cond
-      ;; ——— 1) new
+      ;; ——— (new A)
       ((eq? (operator expr) 'new)
-       (let ((class-name (operand1 expr)))       ; e.g. 'A
+       (let ((class-name (operand1 expr)))  ; e.g. 'A
          (make-instance-closure
-           (lookup class-name environment))))    ; returns instance-closure
+          (lookup class-name environment)))) ; returns (instance-closure class-closure fields)
 
-      ;; ——— 2) dot
+      ;; ——— (dot a x) or (dot a method)
       ((eq? (operator expr) 'dot)
        (let* ((inst   (eval-expression (operand1 expr) environment))
               (member (operand2 expr)))
-         (unless (and (list? inst)
-                      (eq? (car inst) 'instance-closure))
+         (unless (and (list? inst) (eq? (car inst) 'instance-closure))
            (myerror "dot on non-instance:" inst))
-         ;; inst = '(instance-closure class-closure fields-hash)
          (let ((fields (list-ref inst 2)))
-           (hash-ref fields member))))
+           (if (hash-has-key? fields member)
+               ;; field access
+               (hash-ref fields member)
+               ;; else, method access
+               (let* ((class-closure (list-ref inst 1))
+                      (methods       (list-ref class-closure 4)))
+                 (if (hash-has-key? methods member)
+                     ;; method access → return a bound-method
+                     (list 'bound-method inst (hash-ref methods member))
+                     (myerror "Unknown field or method:" member)))))))
 
-      ;; ——— 3) existing funcall
+      ;; ——— (funcall f args...)  where f can be a closure or a bound-method
       ((eq? (operator expr) 'funcall)
-       (let* ((fun  (lookup (cadr expr) environment))
-              (args (map (lambda (arg) (eval-expression arg environment))
+       (let* ((fun (eval-expression (cadr expr) environment))
+              (args (map (lambda (arg)
+                           (eval-expression arg environment))
                          (cddr expr))))
-         (call-function fun args environment)))
+         (cond
+           ;; normal function call
+           ((and (list? fun) (eq? (car fun) 'closure))
+            (call-function fun args environment))
 
-      ;; ——— rest of your cases unchanged...
+           ;; method call (bound to instance)
+           ((and (list? fun) (eq? (car fun) 'bound-method))
+            (let* ((this-instance (list-ref fun 1))
+                   (method-closure (list-ref fun 2)))
+              (call-method method-closure this-instance args environment)))
+
+           (else
+            (myerror "Cannot call non-function:" fun)))))
+
+      ;; ——— (!) logical not
       ((eq? (operator expr) '!)
        (not (eval-expression (operand1 expr) environment)))
-      ((and (eq? (operator expr) '-) (= 2 (length expr)))
+
+      ;; ——— unary minus
+      ((and (eq? (operator expr) '-)
+            (= 2 (length expr)))
        (- (eval-expression (operand1 expr) environment)))
+
+      ;; ——— everything else binary (+, -, *, ==, etc)
       (else
        (eval-binary-op2 expr
                         (eval-expression (operand1 expr) environment)
                         environment)))))
+
 
 
 ; Complete the evaluation of the binary operator by evaluating the second operand and performing the operation.
