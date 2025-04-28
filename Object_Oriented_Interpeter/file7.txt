@@ -1,0 +1,12 @@
+class A {
+  var x = 1;
+  var y = 2;
+
+  function m() {
+    return this.m2();
+  }
+
+  function m2() {
+    return x+y;
+  }
+}
