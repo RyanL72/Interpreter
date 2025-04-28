@@ -222,12 +222,32 @@
                       environment))
         (next (insert (get-declare-var statement) 'novalue environment)))))
 
-; Updates the environment to add a new binding for a variable.
 (define interpret-assign
   (lambda (statement environment next)
-    (next (update (get-assign-lhs statement)
-                  (eval-expression (get-assign-rhs statement) environment)
-                  environment))))
+    (let* ((lhs (get-assign-lhs statement))
+           (rhs (eval-expression (get-assign-rhs statement) environment)))
+      (cond
+        ;; — normal variable assignment
+        ((symbol? lhs)
+         (next (update lhs rhs environment)))
+
+        ;; — assignment to (dot this field)
+        ((and (list? lhs)
+              (eq? (car lhs) 'dot)
+              (eq? (operand1 lhs) 'this))
+         (let* ((field-name (operand2 lhs))
+                (this-instance (lookup 'this environment)))
+           (unless (and (list? this-instance)
+                        (eq? (car this-instance) 'instance-closure))
+             (myerror "this is not an instance:" this-instance))
+           (let ((fields (list-ref this-instance 2)))
+             (hash-set! fields field-name rhs)
+             (next environment))))
+
+        ;; — invalid assignment target
+        (else
+         (myerror "invalid assignment lhs:" lhs))))))
+
 
 ; Check if there is an else condition; if not, evaluate the condition and do the right thing.
 (define interpret-if
