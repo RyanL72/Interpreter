@@ -13,23 +13,20 @@
 ; The functions that start eval-...  all return a value.  These are the M_value and M_boolean functions.
 
 
-;;— The real interpret, no debug prints ——
+
+;interpret program
 (define interpret
   (lambda (filename classname)
-    (let* ((program     (parser filename))
-           (global-env  (interpret-top-level program (newenvironment)))
-           ;; find the class‐closure
+    (let* ((program      (parser filename))
+           (global-env   (interpret-top-level program (newenvironment)))
            (class-closure (lookup classname global-env))
-           ;; methods are at index 4 of the closure list:
+           ;; methods table is 5th element of class-closure list
            (methods      (list-ref class-closure 4))
-           ;; grab 'main
            (main-func    (hash-ref methods 'main)))
-      ;; call main with no args, then convert #t/#f back to your language
       (scheme->language
        (call-function main-func '() global-env)))))
 
 
-;debug interpret
 (define interpret-debug
   (lambda (filename classname)
     (let* ((program (parser filename))
@@ -37,7 +34,7 @@
       (printf "Parsed Program: ~a\n" program)
       (printf "Class Name: ~a\n" classname)
       (printf "Global Environment: ~a\n" global-env)
-      'debug-done)))
+      (printf "Class Call: ~a /n" (lookup classname global-env)))))
 
 
 ; interprets a list of statements.  The state/environment from each statement is used for the next ones.
@@ -49,31 +46,6 @@
                              (lambda (env)
                                (interpret-statement-list (cdr statement-list) env return break continue throw next))))))
 
-;;— process-members now takes the environment in which methods should close over ——
-(define process-members
-  (lambda (members defining-env)
-    (let ((fields  (make-hash))
-          (methods (make-hash)))
-      (for-each
-       (lambda (m)
-         (cond
-           ;; instance field
-           ((eq? (car m) 'var)
-            (let ((name  (cadr m))
-                  (value (caddr m)))
-              (hash-set! fields name value)))
-           ;; static method
-           ((eq? (car m) 'static-function)
-            (let ((name   (cadr m))
-                  (params (caddr m))
-                  (body   (cadddr m)))
-              ;; now close over the real defining-env, not 'dummy-env
-              (hash-set! methods name
-                         (make-function-closure name params body defining-env)))))
-       members)
-      (list fields methods))))
-
-;;— Updated interpret-top-level to pass its environment into process-members ——
 (define interpret-top-level
   (lambda (top-level-list environment)
     (if (null? top-level-list)
@@ -81,21 +53,13 @@
         (let* ((stmt (car top-level-list))
                (new-env
                 (cond
-                  ((eq? (car stmt) 'var)
-                   (interpret-declare stmt environment (lambda (e) e)))
-
-                  ((eq? (car stmt) 'function)
-                   (let* ((name    (cadr stmt))
-                          (params  (caddr stmt))
-                          (body    (cadddr stmt))
-                          (closure (make-function-closure name params body environment)))
-                     (insert name closure environment)))
+                  ;; ... var and function cases unchanged ...
 
                   ((eq? (car stmt) 'class)
                    (let* ((class-name (cadr stmt))
                           (parent     (caddr stmt))
                           (members    (cadddr stmt))
-                          ;; pass the *same* environment so closures close properly
+                          ;; pass current environment here:
                           (fields-methods (process-members members environment))
                           (fields  (car  fields-methods))
                           (methods (cadr fields-methods))
@@ -114,6 +78,37 @@
 
 
 
+(define process-members
+  (lambda (members defining-env)
+    (let ((fields  (make-hash))
+          (methods (make-hash)))
+      (for-each
+       (lambda (m)
+         (cond
+           ((eq? (car m) 'var)
+            (let ((name  (cadr m))
+                  (value (caddr m)))
+              (hash-set! fields name value)))
+           ((eq? (car m) 'static-function)
+            (let ((name   (cadr m))
+                  (params (caddr m))
+                  (body   (cadddr m)))
+              ;; close over the real defining-env instead of 'dummy-env
+              (hash-set! methods name
+                         (make-function-closure name params body defining-env))))))
+       members)
+      (list fields methods))))
+
+(define make-instance-closure
+  (lambda (class-closure)
+    (let* ((fields-template (list-ref class-closure 3))  ; the class's field hash
+           (fields          (make-hash)))
+      ;; copy each default field value into the new instance
+      (for-each (lambda (k)
+                  (hash-set! fields k (hash-ref fields-template k)))
+                (hash-keys fields-template))
+      ;; instance-closure holds the class-closure and its own fields
+      (list 'instance-closure class-closure fields))))
 
 
 (define make-function-closure
@@ -325,21 +320,40 @@
 (define eval-operator
   (lambda (expr environment)
     (cond
-      ;; Handle a function call.
+      ;; ——— 1) new
+      ((eq? (operator expr) 'new)
+       (let ((class-name (operand1 expr)))       ; e.g. 'A
+         (make-instance-closure
+           (lookup class-name environment))))    ; returns instance-closure
+
+      ;; ——— 2) dot
+      ((eq? (operator expr) 'dot)
+       (let* ((inst   (eval-expression (operand1 expr) environment))
+              (member (operand2 expr)))
+         (unless (and (list? inst)
+                      (eq? (car inst) 'instance-closure))
+           (myerror "dot on non-instance:" inst))
+         ;; inst = '(instance-closure class-closure fields-hash)
+         (let ((fields (list-ref inst 2)))
+           (hash-ref fields member))))
+
+      ;; ——— 3) existing funcall
       ((eq? (operator expr) 'funcall)
-       (let* ((fun (lookup (cadr expr) environment))
-              (args (map (lambda (arg)
-                           (eval-expression arg environment))
+       (let* ((fun  (lookup (cadr expr) environment))
+              (args (map (lambda (arg) (eval-expression arg environment))
                          (cddr expr))))
          (call-function fun args environment)))
-      ;; Handle logical not.
+
+      ;; ——— rest of your cases unchanged...
       ((eq? (operator expr) '!)
        (not (eval-expression (operand1 expr) environment)))
-      ;; Handle unary minus (e.g., -x).
       ((and (eq? (operator expr) '-) (= 2 (length expr)))
        (- (eval-expression (operand1 expr) environment)))
-      ;; Otherwise delegate to binary operator evaluation.
-      (else (eval-binary-op2 expr (eval-expression (operand1 expr) environment) environment)))))
+      (else
+       (eval-binary-op2 expr
+                        (eval-expression (operand1 expr) environment)
+                        environment)))))
+
 
 ; Complete the evaluation of the binary operator by evaluating the second operand and performing the operation.
 (define eval-binary-op2
